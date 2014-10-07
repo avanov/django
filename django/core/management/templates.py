@@ -8,17 +8,13 @@ import shutil
 import stat
 import sys
 import tempfile
-try:
-    from urllib.request import urlretrieve
-except ImportError:     # Python 2
-    from urllib import urlretrieve
 
-from optparse import make_option
 from os import path
 
 import django
 from django.template import Template, Context
 from django.utils import archive
+from django.utils.six.moves.urllib.request import urlretrieve
 from django.utils._os import rmtree_errorhandler
 from django.core.management.base import BaseCommand, CommandError
 from django.core.management.utils import handle_extensions
@@ -39,23 +35,7 @@ class TemplateCommand(BaseCommand):
     :param directory: The directory to which the template should be copied.
     :param options: The additional variables passed to project or app templates
     """
-    args = "[name] [optional destination directory]"
-    option_list = BaseCommand.option_list + (
-        make_option('--template',
-                    action='store', dest='template',
-                    help='The path or URL to load the template from.'),
-        make_option('--extension', '-e', dest='extensions',
-                    action='append', default=['py'],
-                    help='The file extension(s) to render (default: "py"). '
-                         'Separate multiple extensions with commas, or use '
-                         '-e multiple times.'),
-        make_option('--name', '-n', dest='files',
-                    action='append', default=[],
-                    help='The file name(s) to render. '
-                         'Separate multiple extensions with commas, or use '
-                         '-n multiple times.')
-        )
-    requires_model_validation = False
+    requires_system_checks = False
     # Can't import settings during this command, because they haven't
     # necessarily been created.
     can_import_settings = False
@@ -65,10 +45,26 @@ class TemplateCommand(BaseCommand):
     # setting might not be available at all.
     leave_locale_alone = True
 
+    def add_arguments(self, parser):
+        parser.add_argument('name', help='Name of the application or project.')
+        parser.add_argument('directory', nargs='?', help='Optional destination directory')
+        parser.add_argument('--template',
+            help='The path or URL to load the template from.')
+        parser.add_argument('--extension', '-e', dest='extensions',
+            action='append', default=['py'],
+            help='The file extension(s) to render (default: "py"). '
+                 'Separate multiple extensions with commas, or use '
+                 '-e multiple times.')
+        parser.add_argument('--name', '-n', dest='files',
+            action='append', default=[],
+            help='The file name(s) to render. '
+                 'Separate multiple extensions with commas, or use '
+                 '-n multiple times.')
+
     def handle(self, app_or_project, name, target=None, **options):
         self.app_or_project = app_or_project
         self.paths_to_remove = []
-        self.verbosity = int(options.get('verbosity'))
+        self.verbosity = options['verbosity']
 
         self.validate_name(name, app_or_project)
 
@@ -90,9 +86,9 @@ class TemplateCommand(BaseCommand):
                                    "exist, please create it first." % top_dir)
 
         extensions = tuple(
-            handle_extensions(options.get('extensions'), ignored=()))
+            handle_extensions(options['extensions'], ignored=()))
         extra_files = []
-        for file in options.get('files'):
+        for file in options['files']:
             extra_files.extend(map(lambda x: x.strip(), file.split(',')))
         if self.verbosity >= 2:
             self.stdout.write("Rendering %s template files with "
@@ -121,7 +117,7 @@ class TemplateCommand(BaseCommand):
         if not settings.configured:
             settings.configure()
 
-        template_dir = self.handle_template(options.get('template'),
+        template_dir = self.handle_template(options['template'],
                                             base_subdir)
         prefix_length = len(template_dir) + 1
 
@@ -232,7 +228,7 @@ class TemplateCommand(BaseCommand):
             tmp = url.rstrip('/')
             filename = tmp.split('/')[-1]
             if url.endswith('/'):
-                display_url  = tmp + '/'
+                display_url = tmp + '/'
             else:
                 display_url = url
             return filename, display_url
@@ -269,7 +265,7 @@ class TemplateCommand(BaseCommand):
                 guessed_filename += ext
 
         # Move the temporary file to a filename that has better
-        # chances of being recognnized by the archive utils
+        # chances of being recognized by the archive utils
         if used_name != guessed_filename:
             guessed_path = path.join(tempdir, guessed_filename)
             shutil.move(the_path, guessed_path)

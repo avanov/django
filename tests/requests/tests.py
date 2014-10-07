@@ -5,19 +5,18 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from itertools import chain
 import time
-from unittest import skipIf
-import warnings
 
-from django.db import connection, connections, DEFAULT_DB_ALIAS
-from django.core import signals
 from django.core.exceptions import SuspiciousOperation
 from django.core.handlers.wsgi import WSGIRequest, LimitedStream
-from django.http import HttpRequest, HttpResponse, parse_cookie, build_request_repr, UnreadablePostError
-from django.test import SimpleTestCase, TransactionTestCase
+from django.http import (HttpRequest, HttpResponse, parse_cookie,
+    build_request_repr, UnreadablePostError, RawPostDataException)
+from django.test import SimpleTestCase, RequestFactory, override_settings
 from django.test.client import FakePayload
-from django.test.utils import override_settings, str_prefix
+from django.test.utils import str_prefix
 from django.utils import six
+from django.utils.encoding import force_str
 from django.utils.http import cookie_date, urlencode
+from django.utils.six.moves.urllib.parse import urlencode as original_urlencode
 from django.utils.timezone import utc
 
 
@@ -28,6 +27,13 @@ class RequestsTests(SimpleTestCase):
         self.assertEqual(list(request.POST.keys()), [])
         self.assertEqual(list(request.COOKIES.keys()), [])
         self.assertEqual(list(request.META.keys()), [])
+
+        # .GET and .POST should be QueryDicts
+        self.assertEqual(request.GET.urlencode(), '')
+        self.assertEqual(request.POST.urlencode(), '')
+
+        # and FILES should be MultiValueDict
+        self.assertEqual(request.FILES.getlist('foo'), [])
 
     def test_httprequest_repr(self):
         request = HttpRequest()
@@ -41,12 +47,28 @@ class RequestsTests(SimpleTestCase):
         self.assertEqual(build_request_repr(request, path_override='/otherpath/', GET_override={'a': 'b'}, POST_override={'c': 'd'}, COOKIES_override={'e': 'f'}, META_override={'g': 'h'}),
                          str_prefix("<HttpRequest\npath:/otherpath/,\nGET:{%(_)s'a': %(_)s'b'},\nPOST:{%(_)s'c': %(_)s'd'},\nCOOKIES:{%(_)s'e': %(_)s'f'},\nMETA:{%(_)s'g': %(_)s'h'}>"))
 
+    def test_bad_httprequest_repr(self):
+        """
+        If an exception occurs when parsing GET, POST, COOKIES, or META, the
+        repr of the request should show it.
+        """
+        class Bomb(object):
+            """An object that raises an exception when printed out."""
+            def __repr__(self):
+                raise Exception('boom!')
+
+        bomb = Bomb()
+        for attr in ['GET', 'POST', 'COOKIES', 'META']:
+            request = HttpRequest()
+            setattr(request, attr, {'bomb': bomb})
+            self.assertIn('%s:<could not parse>' % attr, repr(request))
+
     def test_wsgirequest(self):
         request = WSGIRequest({'PATH_INFO': 'bogus', 'REQUEST_METHOD': 'bogus', 'wsgi.input': BytesIO(b'')})
         self.assertEqual(list(request.GET.keys()), [])
         self.assertEqual(list(request.POST.keys()), [])
         self.assertEqual(list(request.COOKIES.keys()), [])
-        self.assertEqual(set(request.META.keys()), set(['PATH_INFO', 'REQUEST_METHOD', 'SCRIPT_NAME', 'wsgi.input']))
+        self.assertEqual(set(request.META.keys()), {'PATH_INFO', 'REQUEST_METHOD', 'SCRIPT_NAME', 'wsgi.input'})
         self.assertEqual(request.META['PATH_INFO'], 'bogus')
         self.assertEqual(request.META['REQUEST_METHOD'], 'bogus')
         self.assertEqual(request.META['SCRIPT_NAME'], '')
@@ -161,7 +183,7 @@ class RequestsTests(SimpleTestCase):
         response.set_cookie('max_age', max_age=10)
         max_age_cookie = response.cookies['max_age']
         self.assertEqual(max_age_cookie['max-age'], 10)
-        self.assertEqual(max_age_cookie['expires'], cookie_date(time.time()+10))
+        self.assertEqual(max_age_cookie['expires'], cookie_date(time.time() + 10))
 
     def test_httponly_cookie(self):
         response = HttpResponse()
@@ -171,6 +193,13 @@ class RequestsTests(SimpleTestCase):
         # both as an output string, and using the cookie attributes
         self.assertTrue('; httponly' in str(example_cookie))
         self.assertTrue(example_cookie['httponly'])
+
+    def test_unicode_cookie(self):
+        "Verify HttpResponse.set_cookie() works with unicode data."
+        response = HttpResponse()
+        cookie_value = '清風'
+        response.set_cookie('test', cookie_value)
+        self.assertEqual(force_str(cookie_value), response.cookies['test'].value)
 
     def test_limited_stream(self):
         # Read all of a limited stream
@@ -262,7 +291,7 @@ class RequestsTests(SimpleTestCase):
                                'CONTENT_LENGTH': len(payload),
                                'wsgi.input': payload})
         self.assertEqual(request.read(2), b'na')
-        self.assertRaises(Exception, lambda: request.body)
+        self.assertRaises(RawPostDataException, lambda: request.body)
         self.assertEqual(request.POST, {})
 
     def test_non_ascii_POST(self):
@@ -279,8 +308,7 @@ class RequestsTests(SimpleTestCase):
         """
         Test a POST with non-utf-8 payload encoding.
         """
-        from django.utils.http import urllib_parse
-        payload = FakePayload(urllib_parse.urlencode({'key': 'España'.encode('latin-1')}))
+        payload = FakePayload(original_urlencode({'key': 'España'.encode('latin-1')}))
         request = WSGIRequest({
             'REQUEST_METHOD': 'POST',
             'CONTENT_LENGTH': len(payload),
@@ -297,18 +325,18 @@ class RequestsTests(SimpleTestCase):
         # we don't want the data held in memory twice, and we don't want to
         # silence the error by setting body = '' either.
         payload = FakePayload("\r\n".join([
-                '--boundary',
-                'Content-Disposition: form-data; name="name"',
-                '',
-                'value',
-                '--boundary--'
-                '']))
+            '--boundary',
+            'Content-Disposition: form-data; name="name"',
+            '',
+            'value',
+            '--boundary--'
+            '']))
         request = WSGIRequest({'REQUEST_METHOD': 'POST',
                                'CONTENT_TYPE': 'multipart/form-data; boundary=boundary',
                                'CONTENT_LENGTH': len(payload),
                                'wsgi.input': payload})
         self.assertEqual(request.POST, {'name': ['value']})
-        self.assertRaises(Exception, lambda: request.body)
+        self.assertRaises(RawPostDataException, lambda: request.body)
 
     def test_body_after_POST_multipart_related(self):
         """
@@ -319,12 +347,12 @@ class RequestsTests(SimpleTestCase):
         # being a binary upload, in which case it should still be accessible
         # via body.
         payload_data = b"\r\n".join([
-                b'--boundary',
-                b'Content-ID: id; name="name"',
-                b'',
-                b'value',
-                b'--boundary--'
-                b''])
+            b'--boundary',
+            b'Content-ID: id; name="name"',
+            b'',
+            b'value',
+            b'--boundary--'
+            b''])
         payload = FakePayload(payload_data)
         request = WSGIRequest({'REQUEST_METHOD': 'POST',
                                'CONTENT_TYPE': 'multipart/related; boundary=boundary',
@@ -342,12 +370,12 @@ class RequestsTests(SimpleTestCase):
         # Every request.POST with Content-Length >= 0 is a valid request,
         # this test ensures that we handle Content-Length == 0.
         payload = FakePayload("\r\n".join([
-                '--boundary',
-                'Content-Disposition: form-data; name="name"',
-                '',
-                'value',
-                '--boundary--'
-                '']))
+            '--boundary',
+            'Content-Disposition: form-data; name="name"',
+            '',
+            'value',
+            '--boundary--'
+            '']))
         request = WSGIRequest({'REQUEST_METHOD': 'POST',
                                'CONTENT_TYPE': 'multipart/form-data; boundary=boundary',
                                'CONTENT_LENGTH': 0,
@@ -389,7 +417,7 @@ class RequestsTests(SimpleTestCase):
                                'CONTENT_TYPE': 'application/x-www-form-urlencoded',
                                'CONTENT_LENGTH': len(payload),
                                'wsgi.input': payload})
-        raw_data = request.body
+        request.body  # evaluate
         self.assertEqual(request.POST, {'name': ['value']})
 
     def test_POST_after_body_read_and_stream_read(self):
@@ -402,7 +430,7 @@ class RequestsTests(SimpleTestCase):
                                'CONTENT_TYPE': 'application/x-www-form-urlencoded',
                                'CONTENT_LENGTH': len(payload),
                                'wsgi.input': payload})
-        raw_data = request.body
+        request.body  # evaluate
         self.assertEqual(request.read(1), b'n')
         self.assertEqual(request.POST, {'name': ['value']})
 
@@ -412,17 +440,17 @@ class RequestsTests(SimpleTestCase):
         the stream is read second. Using multipart/form-data instead of urlencoded.
         """
         payload = FakePayload("\r\n".join([
-                '--boundary',
-                'Content-Disposition: form-data; name="name"',
-                '',
-                'value',
-                '--boundary--'
-                '']))
+            '--boundary',
+            'Content-Disposition: form-data; name="name"',
+            '',
+            'value',
+            '--boundary--'
+            '']))
         request = WSGIRequest({'REQUEST_METHOD': 'POST',
                                'CONTENT_TYPE': 'multipart/form-data; boundary=boundary',
                                'CONTENT_LENGTH': len(payload),
                                'wsgi.input': payload})
-        raw_data = request.body
+        request.body  # evaluate
         # Consume enough data to mess up the parsing:
         self.assertEqual(request.read(13), b'--boundary\r\nC')
         self.assertEqual(request.POST, {'name': ['value']})
@@ -479,7 +507,7 @@ class HostValidationTests(SimpleTestCase):
             'forward.com', 'example.com', 'internal.com', '12.34.56.78',
             '[2001:19f0:feee::dead:beef:cafe]', 'xn--4ca9at.com',
             '.multitenant.com', 'INSENSITIVE.com',
-            ])
+        ])
     def test_http_get_host(self):
         # Check if X_FORWARDED_HOST is provided.
         request = HttpRequest()
@@ -524,10 +552,12 @@ class HostValidationTests(SimpleTestCase):
             '12.34.56.78:443',
             '[2001:19f0:feee::dead:beef:cafe]',
             '[2001:19f0:feee::dead:beef:cafe]:8080',
-            'xn--4ca9at.com', # Punnycode for öäü.com
+            'xn--4ca9at.com',  # Punnycode for öäü.com
             'anything.multitenant.com',
             'multitenant.com',
             'insensitive.com',
+            'example.com.',
+            'example.com.:80',
         ]
 
         for host in legit_hosts:
@@ -538,7 +568,7 @@ class HostValidationTests(SimpleTestCase):
             request.get_host()
 
         # Poisoned host headers are rejected as suspicious
-        for host in chain(self.poisoned_hosts, ['other.com']):
+        for host in chain(self.poisoned_hosts, ['other.com', 'example.com..']):
             with self.assertRaises(SuspiciousOperation):
                 request = HttpRequest()
                 request.META = {
@@ -592,7 +622,7 @@ class HostValidationTests(SimpleTestCase):
             '12.34.56.78:443',
             '[2001:19f0:feee::dead:beef:cafe]',
             '[2001:19f0:feee::dead:beef:cafe]:8080',
-            'xn--4ca9at.com', # Punnycode for öäü.com
+            'xn--4ca9at.com',  # Punnycode for öäü.com
         ]
 
         for host in legit_hosts:
@@ -609,7 +639,6 @@ class HostValidationTests(SimpleTestCase):
                     'HTTP_HOST': host,
                 }
                 request.get_host()
-
 
     @override_settings(DEBUG=True, ALLOWED_HOSTS=[])
     def test_host_validation_disabled_in_debug_mode(self):
@@ -632,14 +661,14 @@ class HostValidationTests(SimpleTestCase):
     def test_get_host_suggestion_of_allowed_host(self):
         """get_host() makes helpful suggestions if a valid-looking host is not in ALLOWED_HOSTS."""
         msg_invalid_host = "Invalid HTTP_HOST header: %r."
-        msg_suggestion = msg_invalid_host + "You may need to add %r to ALLOWED_HOSTS."
-        msg_suggestion2 = msg_invalid_host + "The domain name provided is not valid according to RFC 1034/1035"
+        msg_suggestion = msg_invalid_host + " You may need to add %r to ALLOWED_HOSTS."
+        msg_suggestion2 = msg_invalid_host + " The domain name provided is not valid according to RFC 1034/1035"
 
-        for host in [ # Valid-looking hosts
+        for host in [  # Valid-looking hosts
             'example.com',
             '12.34.56.78',
             '[2001:19f0:feee::dead:beef:cafe]',
-            'xn--4ca9at.com', # Punnycode for öäü.com
+            'xn--4ca9at.com',  # Punnycode for öäü.com
         ]:
             request = HttpRequest()
             request.META = {'HTTP_HOST': host}
@@ -649,7 +678,7 @@ class HostValidationTests(SimpleTestCase):
                 request.get_host
             )
 
-        for domain, port in [ # Valid-looking hosts with a port number
+        for domain, port in [  # Valid-looking hosts with a port number
             ('example.com', 80),
             ('12.34.56.78', 443),
             ('[2001:19f0:feee::dead:beef:cafe]', 8080),
@@ -681,57 +710,62 @@ class HostValidationTests(SimpleTestCase):
         )
 
 
-@skipIf(connection.vendor == 'sqlite'
-        and connection.settings_dict['TEST_NAME'] in (None, '', ':memory:'),
-        "Cannot establish two connections to an in-memory SQLite database.")
-class DatabaseConnectionHandlingTests(TransactionTestCase):
-
-    available_apps = []
+class BuildAbsoluteURITestCase(SimpleTestCase):
+    """
+    Regression tests for ticket #18314.
+    """
 
     def setUp(self):
-        # Use a temporary connection to avoid messing with the main one.
-        self._old_default_connection = connections['default']
-        del connections['default']
+        self.factory = RequestFactory()
 
-    def tearDown(self):
-        try:
-            connections['default'].close()
-        finally:
-            connections['default'] = self._old_default_connection
+    def test_build_absolute_uri_no_location(self):
+        """
+        Ensures that ``request.build_absolute_uri()`` returns the proper value
+        when the ``location`` argument is not provided, and ``request.path``
+        begins with //.
+        """
+        # //// is needed to create a request with a path beginning with //
+        request = self.factory.get('////absolute-uri')
+        self.assertEqual(
+            request.build_absolute_uri(),
+            'http://testserver//absolute-uri'
+        )
 
-    def test_request_finished_db_state(self):
-        # Force closing connection on request end
-        connection.settings_dict['CONN_MAX_AGE'] = 0
+    def test_build_absolute_uri_absolute_location(self):
+        """
+        Ensures that ``request.build_absolute_uri()`` returns the proper value
+        when an absolute URL ``location`` argument is provided, and
+        ``request.path`` begins with //.
+        """
+        # //// is needed to create a request with a path beginning with //
+        request = self.factory.get('////absolute-uri')
+        self.assertEqual(
+            request.build_absolute_uri(location='http://example.com/?foo=bar'),
+            'http://example.com/?foo=bar'
+        )
 
-        # The GET below will not succeed, but it will give a response with
-        # defined ._handler_class. That is needed for sending the
-        # request_finished signal.
-        response = self.client.get('/')
-        # Make sure there is an open connection
-        connection.cursor()
-        connection.enter_transaction_management()
-        signals.request_finished.send(sender=response._handler_class)
-        self.assertEqual(len(connection.transaction_state), 0)
+    def test_build_absolute_uri_schema_relative_location(self):
+        """
+        Ensures that ``request.build_absolute_uri()`` returns the proper value
+        when a schema-relative URL ``location`` argument is provided, and
+        ``request.path`` begins with //.
+        """
+        # //// is needed to create a request with a path beginning with //
+        request = self.factory.get('////absolute-uri')
+        self.assertEqual(
+            request.build_absolute_uri(location='//example.com/?foo=bar'),
+            'http://example.com/?foo=bar'
+        )
 
-    def test_request_finished_failed_connection(self):
-        # Force closing connection on request end
-        connection.settings_dict['CONN_MAX_AGE'] = 0
-
-        connection.enter_transaction_management()
-        connection.set_dirty()
-        # Test that the rollback doesn't succeed (for example network failure
-        # could cause this).
-        def fail_horribly():
-            raise Exception("Horrible failure!")
-        connection._rollback = fail_horribly
-        try:
-            with self.assertRaises(Exception):
-                signals.request_finished.send(sender=self.__class__)
-            # The connection's state wasn't cleaned up
-            self.assertEqual(len(connection.transaction_state), 1)
-        finally:
-            del connection._rollback
-        # The connection will be cleaned on next request where the conn
-        # works again.
-        signals.request_finished.send(sender=self.__class__)
-        self.assertEqual(len(connection.transaction_state), 0)
+    def test_build_absolute_uri_relative_location(self):
+        """
+        Ensures that ``request.build_absolute_uri()`` returns the proper value
+        when a relative URL ``location`` argument is provided, and
+        ``request.path`` begins with //.
+        """
+        # //// is needed to create a request with a path beginning with //
+        request = self.factory.get('////absolute-uri')
+        self.assertEqual(
+            request.build_absolute_uri(location='/foo/bar/'),
+            'http://testserver/foo/bar/'
+        )

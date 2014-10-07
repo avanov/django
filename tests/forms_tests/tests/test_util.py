@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+import copy
+
 from django.core.exceptions import ValidationError
-from django.forms.util import flatatt, ErrorDict, ErrorList
+from django.forms.utils import flatatt, ErrorDict, ErrorList
 from django.test import TestCase
 from django.utils.safestring import mark_safe
 from django.utils import six
@@ -11,7 +13,7 @@ from django.utils.encoding import python_2_unicode_compatible
 
 
 class FormsUtilTestCase(TestCase):
-        # Tests for forms/util.py module.
+    # Tests for forms/utils.py module.
 
     def test_flatatt(self):
         ###########
@@ -20,6 +22,9 @@ class FormsUtilTestCase(TestCase):
 
         self.assertEqual(flatatt({'id': "header"}), ' id="header"')
         self.assertEqual(flatatt({'class': "news", 'title': "Read this"}), ' class="news" title="Read this"')
+        self.assertEqual(flatatt({'class': "news", 'title': "Read this", 'required': "required"}), ' class="news" required="required" title="Read this"')
+        self.assertEqual(flatatt({'class': "news", 'title': "Read this", 'required': True}), ' class="news" title="Read this" required')
+        self.assertEqual(flatatt({'class': "news", 'title': "Read this", 'required': False}), ' class="news" title="Read this"')
         self.assertEqual(flatatt({}), '')
 
     def test_validation_error(self):
@@ -49,7 +54,8 @@ class FormsUtilTestCase(TestCase):
 
         @python_2_unicode_compatible
         class VeryBadError:
-            def __str__(self): return "A very bad error."
+            def __str__(self):
+                return "A very bad error."
 
         # Can take a non-string.
         self.assertHTMLEqual(str(ErrorList(ValidationError(VeryBadError()).messages)),
@@ -65,3 +71,24 @@ class FormsUtilTestCase(TestCase):
                          '<ul class="errorlist"><li>nameExample of link: &lt;a href=&quot;http://www.example.com/&quot;&gt;example&lt;/a&gt;</li></ul>')
         self.assertHTMLEqual(str(ErrorDict({'name': mark_safe(example)})),
                          '<ul class="errorlist"><li>nameExample of link: <a href="http://www.example.com/">example</a></li></ul>')
+
+    def test_error_dict_copy(self):
+        e = ErrorDict()
+        e['__all__'] = ErrorList([
+            ValidationError(
+                message='message %(i)s',
+                params={'i': 1},
+            ),
+            ValidationError(
+                message='message %(i)s',
+                params={'i': 2},
+            ),
+        ])
+
+        e_copy = copy.copy(e)
+        self.assertEqual(e, e_copy)
+        self.assertEqual(e.as_data(), e_copy.as_data())
+
+        e_deepcopy = copy.deepcopy(e)
+        self.assertEqual(e, e_deepcopy)
+        self.assertEqual(e.as_data(), e_copy.as_data())

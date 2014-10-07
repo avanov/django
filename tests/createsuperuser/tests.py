@@ -24,7 +24,7 @@ class MultiDBChangepasswordManagementCommandTestCase(TestCase):
         command = changepassword.Command()
         command._get_pass = lambda *args: 'not qwerty'
 
-        command.execute("joe", database='other', stdout=self.stdout)
+        command.execute(username="joe", database='other', stdout=self.stdout)
         command_output = self.stdout.getvalue().strip()
 
         self.assertEqual(command_output, "Changing password for user 'joe'\nPassword changed successfully for user 'joe'")
@@ -38,7 +38,8 @@ class MultiDBCreatesuperuserTestCase(TestCase):
         " createsuperuser command should operate on specified DB"
         new_io = StringIO()
 
-        call_command("createsuperuser",
+        call_command(
+            "createsuperuser",
             interactive=False,
             username="joe",
             email="joe@somewhere.org",
@@ -53,4 +54,3 @@ class MultiDBCreatesuperuserTestCase(TestCase):
         self.assertEqual(u.email, 'joe@somewhere.org')
 
         new_io.close()
-

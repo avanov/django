@@ -15,13 +15,24 @@ version.
 Final releases
 ==============
 
+Below are release notes through Django |version| and its minor releases. Newer
+versions of the documentation contain the release notes for any later releases.
+
 .. _development_release_notes:
+
+1.8 release
+-----------
+.. toctree::
+   :maxdepth: 1
+
+   1.8
 
 1.7 release
 -----------
 .. toctree::
    :maxdepth: 1
 
+   1.7.1
    1.7
 
 1.6 release
@@ -29,6 +40,14 @@ Final releases
 .. toctree::
    :maxdepth: 1
 
+   1.6.8
+   1.6.7
+   1.6.6
+   1.6.5
+   1.6.4
+   1.6.3
+   1.6.2
+   1.6.1
    1.6
 
 1.5 release
@@ -36,6 +55,15 @@ Final releases
 .. toctree::
    :maxdepth: 1
 
+   1.5.11
+   1.5.10
+   1.5.9
+   1.5.8
+   1.5.7
+   1.5.6
+   1.5.5
+   1.5.4
+   1.5.3
    1.5.2
    1.5.1
    1.5
@@ -45,6 +73,16 @@ Final releases
 .. toctree::
    :maxdepth: 1
 
+   1.4.16
+   1.4.15
+   1.4.14
+   1.4.13
+   1.4.12
+   1.4.11
+   1.4.10
+   1.4.9
+   1.4.8
+   1.4.7
    1.4.6
    1.4.5
    1.4.4
@@ -108,6 +146,16 @@ Pre-1.0 releases
    0.96
    0.95
 
+Security releases
+=================
+
+Whenever a security issue is disclosed via :doc:`Django's security
+policies </internals/security>`, appropriate release notes are now
+added to all affected release series.
+
+Additionally, :doc:`an archive of disclosed security issues
+</releases/security>` is maintained.
+
 Development releases
 ====================
 
@@ -118,6 +166,7 @@ notes.
 .. toctree::
    :maxdepth: 1
 
+   security
    1.5-beta-1
    1.5-alpha-1
    1.4-beta-1

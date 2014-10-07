@@ -8,12 +8,13 @@ from __future__ import unicode_literals
 
 import datetime
 import decimal
-import warnings
 import re
+import uuid
+import warnings
 
 from django.conf import settings
 from django.db import utils
-from django.db.backends import (util, BaseDatabaseFeatures,
+from django.db.backends import (utils as backend_utils, BaseDatabaseFeatures,
     BaseDatabaseOperations, BaseDatabaseWrapper, BaseDatabaseValidation)
 from django.db.backends.sqlite3.client import DatabaseClient
 from django.db.backends.sqlite3.creation import DatabaseCreation
@@ -80,10 +81,10 @@ Database.register_converter(str("date"), decoder(parse_date))
 Database.register_converter(str("datetime"), decoder(parse_datetime_with_timezone_support))
 Database.register_converter(str("timestamp"), decoder(parse_datetime_with_timezone_support))
 Database.register_converter(str("TIMESTAMP"), decoder(parse_datetime_with_timezone_support))
-Database.register_converter(str("decimal"), decoder(util.typecast_decimal))
+Database.register_converter(str("decimal"), decoder(backend_utils.typecast_decimal))
 
 Database.register_adapter(datetime.datetime, adapt_datetime_with_timezone_support)
-Database.register_adapter(decimal.Decimal, util.rev_typecast_decimal)
+Database.register_adapter(decimal.Decimal, backend_utils.rev_typecast_decimal)
 if six.PY2:
     Database.register_adapter(str, lambda s: s.decode('utf-8'))
     Database.register_adapter(SafeBytes, lambda s: s.decode('utf-8'))
@@ -103,13 +104,24 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     has_bulk_insert = True
     can_combine_inserts_with_and_without_auto_increment_pk = False
     supports_foreign_keys = False
-    supports_check_constraints = False
+    supports_column_check_constraints = False
     autocommits_when_autocommit_is_off = True
+    can_introspect_decimal_field = False
+    can_introspect_positive_integer_field = True
+    can_introspect_small_integer_field = True
+    supports_transactions = True
+    atomic_transactions = False
+    can_rollback_ddl = True
     supports_paramstyle_pyformat = False
+    supports_sequence_reset = False
 
     @cached_property
     def uses_savepoints(self):
         return Database.sqlite_version_info >= (3, 6, 8)
+
+    @cached_property
+    def can_release_savepoints(self):
+        return self.uses_savepoints
 
     @cached_property
     def supports_stddev(self):
@@ -120,14 +132,14 @@ class DatabaseFeatures(BaseDatabaseFeatures):
         rule out support for STDDEV. We need to manually check
         whether the call works.
         """
-        cursor = self.connection.cursor()
-        cursor.execute('CREATE TABLE STDDEV_TEST (X INT)')
-        try:
-            cursor.execute('SELECT STDDEV(*) FROM STDDEV_TEST')
-            has_support = True
-        except utils.DatabaseError:
-            has_support = False
-        cursor.execute('DROP TABLE STDDEV_TEST')
+        with self.connection.cursor() as cursor:
+            cursor.execute('CREATE TABLE STDDEV_TEST (X INT)')
+            try:
+                cursor.execute('SELECT STDDEV(*) FROM STDDEV_TEST')
+                has_support = True
+            except utils.DatabaseError:
+                has_support = False
+            cursor.execute('DROP TABLE STDDEV_TEST')
         return has_support
 
     @cached_property
@@ -210,7 +222,7 @@ class DatabaseOperations(BaseDatabaseOperations):
 
     def quote_name(self, name):
         if name.startswith('"') and name.endswith('"'):
-            return name # Quoting once is enough.
+            return name  # Quoting once is enough.
         return '"%s"' % name
 
     def no_limit_value(self):
@@ -252,27 +264,43 @@ class DatabaseOperations(BaseDatabaseOperations):
 
         return six.text_type(value)
 
-    def convert_values(self, value, field):
-        """SQLite returns floats when it should be returning decimals,
-        and gets dates and datetimes wrong.
-        For consistency with other backends, coerce when required.
-        """
-        if value is None:
-            return None
-
-        internal_type = field.get_internal_type()
-        if internal_type == 'DecimalField':
-            return util.typecast_decimal(field.format_number(value))
-        elif internal_type and internal_type.endswith('IntegerField') or internal_type == 'AutoField':
-            return int(value)
+    def get_db_converters(self, internal_type):
+        converters = super(DatabaseOperations, self).get_db_converters(internal_type)
+        if internal_type == 'DateTimeField':
+            converters.append(self.convert_datetimefield_value)
         elif internal_type == 'DateField':
-            return parse_date(value)
-        elif internal_type == 'DateTimeField':
-            return parse_datetime_with_timezone_support(value)
+            converters.append(self.convert_datefield_value)
         elif internal_type == 'TimeField':
-            return parse_time(value)
+            converters.append(self.convert_timefield_value)
+        elif internal_type == 'DecimalField':
+            converters.append(self.convert_decimalfield_value)
+        elif internal_type == 'UUIDField':
+            converters.append(self.convert_uuidfield_value)
+        return converters
 
-        # No field, or the field isn't known to be a decimal or integer
+    def convert_decimalfield_value(self, value, field):
+        if value is not None:
+            value = backend_utils.typecast_decimal(field.format_number(value))
+        return value
+
+    def convert_datefield_value(self, value, field):
+        if value is not None and not isinstance(value, datetime.date):
+            value = parse_date(value)
+        return value
+
+    def convert_datetimefield_value(self, value, field):
+        if value is not None and not isinstance(value, datetime.datetime):
+            value = parse_datetime_with_timezone_support(value)
+        return value
+
+    def convert_timefield_value(self, value, field):
+        if value is not None and not isinstance(value, datetime.time):
+            value = parse_time(value)
+        return value
+
+    def convert_uuidfield_value(self, value, field):
+        if value is not None:
+            value = uuid.UUID(value)
         return value
 
     def bulk_insert_sql(self, fields, num_values):
@@ -282,6 +310,17 @@ class DatabaseOperations(BaseDatabaseOperations):
         ))
         res.extend(["UNION ALL SELECT %s" % ", ".join(["%s"] * len(fields))] * (num_values - 1))
         return " ".join(res)
+
+    def combine_expression(self, connector, sub_expressions):
+        # SQLite doesn't have a power function, so we fake it with a
+        # user-defined function django_power that's registered in connect().
+        if connector == '^':
+            return 'django_power(%s)' % ','.join(sub_expressions)
+        return super(DatabaseOperations, self).combine_expression(connector, sub_expressions)
+
+    def integer_field_range(self, internal_type):
+        # SQLite doesn't enforce any integer constraints
+        return (None, None)
 
 
 class DatabaseWrapper(BaseDatabaseWrapper):
@@ -306,7 +345,13 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         'iendswith': "LIKE %s ESCAPE '\\'",
     }
 
+    pattern_ops = {
+        'startswith': "LIKE %s || '%%%%'",
+        'istartswith': "LIKE UPPER(%s) || '%%%%'",
+    }
+
     Database = Database
+    SchemaEditorClass = DatabaseSchemaEditor
 
     def __init__(self, *args, **kwargs):
         super(DatabaseWrapper, self).__init__(*args, **kwargs)
@@ -355,6 +400,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         conn.create_function("django_datetime_trunc", 3, _sqlite_datetime_trunc)
         conn.create_function("regexp", 2, _sqlite_regexp)
         conn.create_function("django_format_dtdelta", 5, _sqlite_format_dtdelta)
+        conn.create_function("django_power", 2, _sqlite_power)
         return conn
 
     def init_connection_state(self):
@@ -372,12 +418,16 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             BaseDatabaseWrapper.close(self)
 
     def _savepoint_allowed(self):
+        # Two conditions are required here:
+        # - A sufficiently recent version of SQLite to support savepoints,
+        # - Being in a transaction, which can only happen inside 'atomic'.
+
         # When 'isolation_level' is not None, sqlite3 commits before each
         # savepoint; it's a bug. When it is None, savepoints don't make sense
-        # because autocommit is enabled. The only exception is inside atomic
-        # blocks. To work around that bug, on SQLite, atomic starts a
+        # because autocommit is enabled. The only exception is inside 'atomic'
+        # blocks. To work around that bug, on SQLite, 'atomic' starts a
         # transaction explicitly rather than simply disable autocommit.
-        return self.in_atomic_block
+        return self.features.uses_savepoints and self.in_atomic_block
 
     def _set_autocommit(self, autocommit):
         if autocommit:
@@ -388,19 +438,23 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             level = ''
         # 'isolation_level' is a misleading API.
         # SQLite always runs at the SERIALIZABLE isolation level.
-        self.connection.isolation_level = level
+        with self.wrap_database_errors:
+            self.connection.isolation_level = level
 
     def check_constraints(self, table_names=None):
         """
-        Checks each table name in `table_names` for rows with invalid foreign key references. This method is
-        intended to be used in conjunction with `disable_constraint_checking()` and `enable_constraint_checking()`, to
-        determine if rows with invalid references were entered while constraint checks were off.
+        Checks each table name in `table_names` for rows with invalid foreign
+        key references. This method is intended to be used in conjunction with
+        `disable_constraint_checking()` and `enable_constraint_checking()`, to
+        determine if rows with invalid references were entered while constraint
+        checks were off.
 
-        Raises an IntegrityError on the first invalid foreign key reference encountered (if any) and provides
-        detailed information about the invalid reference in the error message.
+        Raises an IntegrityError on the first invalid foreign key reference
+        encountered (if any) and provides detailed information about the
+        invalid reference in the error message.
 
-        Backends can override this method if they can more directly apply constraint checking (e.g. via "SET CONSTRAINTS
-        ALL IMMEDIATE")
+        Backends can override this method if they can more directly apply
+        constraint checking (e.g. via "SET CONSTRAINTS ALL IMMEDIATE")
         """
         cursor = self.cursor()
         if table_names is None:
@@ -436,9 +490,6 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         """
         self.cursor().execute("BEGIN")
 
-    def schema_editor(self):
-        "Returns a new instance of this backend's SchemaEditor"
-        return DatabaseSchemaEditor(self)
 
 FORMAT_QMARK_REGEX = re.compile(r'(?<!%)%s')
 
@@ -467,7 +518,7 @@ def _sqlite_date_extract(lookup_type, dt):
     if dt is None:
         return None
     try:
-        dt = util.typecast_timestamp(dt)
+        dt = backend_utils.typecast_timestamp(dt)
     except (ValueError, TypeError):
         return None
     if lookup_type == 'week_day':
@@ -478,7 +529,7 @@ def _sqlite_date_extract(lookup_type, dt):
 
 def _sqlite_date_trunc(lookup_type, dt):
     try:
-        dt = util.typecast_timestamp(dt)
+        dt = backend_utils.typecast_timestamp(dt)
     except (ValueError, TypeError):
         return None
     if lookup_type == 'year':
@@ -493,7 +544,7 @@ def _sqlite_datetime_extract(lookup_type, dt, tzname):
     if dt is None:
         return None
     try:
-        dt = util.typecast_timestamp(dt)
+        dt = backend_utils.typecast_timestamp(dt)
     except (ValueError, TypeError):
         return None
     if tzname is not None:
@@ -506,7 +557,7 @@ def _sqlite_datetime_extract(lookup_type, dt, tzname):
 
 def _sqlite_datetime_trunc(lookup_type, dt, tzname):
     try:
-        dt = util.typecast_timestamp(dt)
+        dt = backend_utils.typecast_timestamp(dt)
     except (ValueError, TypeError):
         return None
     if tzname is not None:
@@ -527,7 +578,7 @@ def _sqlite_datetime_trunc(lookup_type, dt, tzname):
 
 def _sqlite_format_dtdelta(dt, conn, days, secs, usecs):
     try:
-        dt = util.typecast_timestamp(dt)
+        dt = backend_utils.typecast_timestamp(dt)
         delta = datetime.timedelta(int(days), int(secs), int(usecs))
         if conn.strip() == '+':
             dt = dt + delta
@@ -542,3 +593,7 @@ def _sqlite_format_dtdelta(dt, conn, days, secs, usecs):
 
 def _sqlite_regexp(re_pattern, re_string):
     return bool(re.search(re_pattern, force_text(re_string))) if re_string is not None else False
+
+
+def _sqlite_power(x, y):
+    return x ** y

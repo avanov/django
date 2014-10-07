@@ -77,7 +77,7 @@ How to use ``FormPreview``
 
    ...and add the following line to the appropriate model in your URLconf::
 
-       (r'^post/$', SomeModelFormPreview(SomeModelForm)),
+       url(r'^post/$', SomeModelFormPreview(SomeModelForm)),
 
    where ``SomeModelForm`` is a Form or ModelForm class for the model.
 
@@ -111,7 +111,7 @@ default templates.
 Advanced ``FormPreview`` methods
 ================================
 
-.. method:: FormPreview.process_preview
+.. method:: FormPreview.process_preview()
 
     Given a validated form, performs any extra processing before displaying the
     preview page, and saves any extra data in context.

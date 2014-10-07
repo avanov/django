@@ -1,14 +1,12 @@
 import os
 
-from django.conf import global_settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.tests.utils import skipIfCustomUser
 from django.contrib.auth.models import User, Permission
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth.context_processors import PermWrapper, PermLookupDict
 from django.db.models import Q
-from django.test import TestCase
-from django.test.utils import override_settings
+from django.test import TestCase, override_settings
 from django.utils._os import upath
 
 
@@ -67,6 +65,7 @@ class PermWrapperTests(TestCase):
     TEMPLATE_DIRS=(
         os.path.join(os.path.dirname(upath(__file__)), 'templates'),
     ),
+    ROOT_URLCONF='django.contrib.auth.tests.urls',
     USE_TZ=False,                           # required for loading the fixture
     PASSWORD_HASHERS=('django.contrib.auth.hashers.SHA1PasswordHasher',),
 )
@@ -74,12 +73,16 @@ class AuthContextProcessorTests(TestCase):
     """
     Tests for the ``django.contrib.auth.context_processors.auth`` processor
     """
-    urls = 'django.contrib.auth.tests.urls'
     fixtures = ['context-processors-users.xml']
 
     @override_settings(
-        MIDDLEWARE_CLASSES=global_settings.MIDDLEWARE_CLASSES,
-        TEMPLATE_CONTEXT_PROCESSORS=global_settings.TEMPLATE_CONTEXT_PROCESSORS,
+        MIDDLEWARE_CLASSES=(
+            'django.contrib.sessions.middleware.SessionMiddleware',
+            'django.contrib.auth.middleware.AuthenticationMiddleware',
+        ),
+        TEMPLATE_CONTEXT_PROCESSORS=(
+            'django.contrib.auth.context_processors.auth',
+        ),
     )
     def test_session_not_accessed(self):
         """
@@ -90,8 +93,13 @@ class AuthContextProcessorTests(TestCase):
         self.assertContains(response, "Session not accessed")
 
     @override_settings(
-        MIDDLEWARE_CLASSES=global_settings.MIDDLEWARE_CLASSES,
-        TEMPLATE_CONTEXT_PROCESSORS=global_settings.TEMPLATE_CONTEXT_PROCESSORS,
+        MIDDLEWARE_CLASSES=(
+            'django.contrib.sessions.middleware.SessionMiddleware',
+            'django.contrib.auth.middleware.AuthenticationMiddleware',
+        ),
+        TEMPLATE_CONTEXT_PROCESSORS=(
+            'django.contrib.auth.context_processors.auth',
+        ),
     )
     def test_session_is_accessed(self):
         """
@@ -112,7 +120,7 @@ class AuthContextProcessorTests(TestCase):
         self.assertContains(response, "Has auth permissions")
         self.assertContains(response, "Has auth.add_permission permissions")
         self.assertNotContains(response, "nonexisting")
-    
+
     def test_perm_in_perms_attrs(self):
         u = User.objects.create_user(username='normal', password='secret')
         u.user_permissions.add(

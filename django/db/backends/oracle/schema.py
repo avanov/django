@@ -1,12 +1,15 @@
 import copy
 import datetime
+import binascii
+
 from django.utils import six
+from django.utils.text import force_text
 from django.db.backends.schema import BaseDatabaseSchemaEditor
 from django.db.utils import DatabaseError
 
 
 class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
-    
+
     sql_create_column = "ALTER TABLE %(table)s ADD %(column)s %(definition)s"
     sql_alter_column_type = "MODIFY %(column)s %(type)s"
     sql_alter_column_null = "MODIFY %(column)s NULL"
@@ -15,7 +18,19 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
     sql_alter_column_no_default = "MODIFY %(column)s DEFAULT NULL"
     sql_delete_column = "ALTER TABLE %(table)s DROP COLUMN %(column)s"
     sql_delete_table = "DROP TABLE %(table)s CASCADE CONSTRAINTS"
-    
+
+    def quote_value(self, value):
+        if isinstance(value, (datetime.date, datetime.time, datetime.datetime)):
+            return "'%s'" % value
+        elif isinstance(value, six.string_types):
+            return "'%s'" % six.text_type(value).replace("\'", "\'\'")
+        elif isinstance(value, six.buffer_types):
+            return "'%s'" % force_text(binascii.hexlify(value))
+        elif isinstance(value, bool):
+            return "1" if value else "0"
+        else:
+            return str(value)
+
     def delete_model(self, model):
         # Run superclass action
         super(DatabaseSchemaEditor, self).delete_model(model)
@@ -78,7 +93,8 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
 
     def normalize_name(self, name):
         """
-        Get the properly shortened and uppercased identifier as returned by quote_name(), but without the actual quotes.
+        Get the properly shortened and uppercased identifier as returned by
+        quote_name(), but without the actual quotes.
         """
         nn = self.quote_name(name)
         if nn[0] == '"' and nn[-1] == '"':
@@ -93,11 +109,4 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         return self.normalize_name(for_name + "_" + suffix)
 
     def prepare_default(self, value):
-        if isinstance(value, (datetime.date, datetime.time, datetime.datetime)):
-            return "'%s'" % value
-        elif isinstance(value, six.string_types):
-            return repr(value)
-        elif isinstance(value, bool):
-            return "1" if value else "0"
-        else:
-            return str(value)
+        return self.quote_value(value)

@@ -1,4 +1,3 @@
-from functools import wraps
 from importlib import import_module
 import os
 import pkgutil
@@ -7,13 +6,15 @@ import warnings
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.utils.deprecation import RemovedInDjango19Warning
 from django.utils.functional import cached_property
-from django.utils.module_loading import import_by_path
+from django.utils.module_loading import import_string
 from django.utils._os import upath
 from django.utils import six
 
 
 DEFAULT_DB_ALIAS = 'default'
+DJANGO_VERSION_PICKLE_KEY = '_django_version'
 
 
 class Error(Exception if six.PY3 else StandardError):
@@ -82,7 +83,7 @@ class DatabaseErrorWrapper(object):
                 DatabaseError,
                 InterfaceError,
                 Error,
-            ):
+        ):
             db_exc_type = getattr(self.wrapper.Database, dj_exc_type.__name__)
             if issubclass(exc_type, db_exc_type):
                 dj_exc_value = dj_exc_type(*exc_value.args)
@@ -94,7 +95,8 @@ class DatabaseErrorWrapper(object):
                 six.reraise(dj_exc_type, dj_exc_value, traceback)
 
     def __call__(self, func):
-        @wraps(func)
+        # Note that we are intentionally not using @wraps here for performance
+        # reasons. Refs #21109.
         def inner(*args, **kwargs):
             with self:
                 return func(*args, **kwargs)
@@ -166,11 +168,6 @@ class ConnectionHandler(object):
             raise ConnectionDoesNotExist("The connection %s doesn't exist" % alias)
 
         conn.setdefault('ATOMIC_REQUESTS', False)
-        if settings.TRANSACTIONS_MANAGED:
-            warnings.warn(
-                "TRANSACTIONS_MANAGED is deprecated. Use AUTOCOMMIT instead.",
-                DeprecationWarning, stacklevel=2)
-            conn.setdefault('AUTOCOMMIT', False)
         conn.setdefault('AUTOCOMMIT', True)
         conn.setdefault('ENGINE', 'django.db.backends.dummy')
         if conn['ENGINE'] == 'django.db.backends.' or not conn['ENGINE']:
@@ -180,14 +177,63 @@ class ConnectionHandler(object):
         conn.setdefault('TIME_ZONE', 'UTC' if settings.USE_TZ else settings.TIME_ZONE)
         for setting in ['NAME', 'USER', 'PASSWORD', 'HOST', 'PORT']:
             conn.setdefault(setting, '')
-        for setting in ['TEST_CHARSET', 'TEST_COLLATION', 'TEST_NAME', 'TEST_MIRROR']:
-            conn.setdefault(setting, None)
+
+    TEST_SETTING_RENAMES = {
+        'CREATE': 'CREATE_DB',
+        'USER_CREATE': 'CREATE_USER',
+        'PASSWD': 'PASSWORD',
+    }
+    TEST_SETTING_RENAMES_REVERSE = {v: k for k, v in TEST_SETTING_RENAMES.items()}
+
+    def prepare_test_settings(self, alias):
+        """
+        Makes sure the test settings are available in the 'TEST' sub-dictionary.
+        """
+        try:
+            conn = self.databases[alias]
+        except KeyError:
+            raise ConnectionDoesNotExist("The connection %s doesn't exist" % alias)
+
+        test_dict_set = 'TEST' in conn
+        test_settings = conn.setdefault('TEST', {})
+        old_test_settings = {}
+        for key, value in six.iteritems(conn):
+            if key.startswith('TEST_'):
+                new_key = key[5:]
+                new_key = self.TEST_SETTING_RENAMES.get(new_key, new_key)
+                old_test_settings[new_key] = value
+
+        if old_test_settings:
+            if test_dict_set:
+                if test_settings != old_test_settings:
+                    raise ImproperlyConfigured(
+                        "Connection '%s' has mismatched TEST and TEST_* "
+                        "database settings." % alias)
+            else:
+                test_settings.update(old_test_settings)
+                for key, _ in six.iteritems(old_test_settings):
+                    warnings.warn("In Django 1.9 the %s connection setting will be moved "
+                                  "to a %s entry in the TEST setting" %
+                                  (self.TEST_SETTING_RENAMES_REVERSE.get(key, key), key),
+                                  RemovedInDjango19Warning, stacklevel=2)
+
+        for key in list(conn.keys()):
+            if key.startswith('TEST_'):
+                del conn[key]
+        # Check that they didn't just use the old name with 'TEST_' removed
+        for key, new_key in six.iteritems(self.TEST_SETTING_RENAMES):
+            if key in test_settings:
+                warnings.warn("Test setting %s was renamed to %s; specified value (%s) ignored" %
+                              (key, new_key, test_settings[key]), stacklevel=2)
+        for key in ['CHARSET', 'COLLATION', 'NAME', 'MIRROR']:
+            test_settings.setdefault(key, None)
 
     def __getitem__(self, alias):
         if hasattr(self._connections, alias):
             return getattr(self._connections, alias)
 
         self.ensure_defaults(alias)
+        self.prepare_test_settings(alias)
         db = self.databases[alias]
         backend = load_backend(db['ENGINE'])
         conn = backend.DatabaseWrapper(db, alias)
@@ -221,7 +267,7 @@ class ConnectionRouter(object):
         routers = []
         for r in self._routers:
             if isinstance(r, six.string_types):
-                router = import_by_path(r)()
+                router = import_string(r)()
             else:
                 router = r
             routers.append(router)
@@ -240,10 +286,10 @@ class ConnectionRouter(object):
                     chosen_db = method(model, **hints)
                     if chosen_db:
                         return chosen_db
-            try:
-                return hints['instance']._state.db or DEFAULT_DB_ALIAS
-            except KeyError:
-                return DEFAULT_DB_ALIAS
+            instance = hints.get('instance')
+            if instance is not None and instance._state.db:
+                return instance._state.db
+            return DEFAULT_DB_ALIAS
         return _route_db
 
     db_for_read = _router_func('db_for_read')
@@ -269,6 +315,10 @@ class ConnectionRouter(object):
                     method = router.allow_migrate
                 except AttributeError:
                     method = router.allow_syncdb
+                    warnings.warn(
+                        'Router.allow_syncdb has been deprecated and will stop working in Django 1.9. '
+                        'Rename the method to allow_migrate.',
+                        RemovedInDjango19Warning, stacklevel=2)
             except AttributeError:
                 # If the router doesn't have a method, skip to the next one.
                 pass
@@ -277,3 +327,10 @@ class ConnectionRouter(object):
                 if allow is not None:
                     return allow
         return True
+
+    def get_migratable_models(self, app_config, db, include_auto_created=False):
+        """
+        Return app models allowed to be synchronized on provided db.
+        """
+        models = app_config.get_models(include_auto_created=include_auto_created)
+        return [model for model in models if self.allow_migrate(db, model)]

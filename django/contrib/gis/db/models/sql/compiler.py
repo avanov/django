@@ -1,14 +1,9 @@
-import datetime
-
-from django.conf import settings
-from django.db.backends.util import truncate_name, typecast_date, typecast_timestamp
+from django.db.backends.utils import truncate_name
 from django.db.models.sql import compiler
-from django.db.models.sql.constants import MULTI
 from django.utils import six
-from django.utils.six.moves import zip, zip_longest
-from django.utils import timezone
 
 SQLCompiler = compiler.SQLCompiler
+
 
 class GeoSQLCompiler(compiler.SQLCompiler):
 
@@ -20,12 +15,12 @@ class GeoSQLCompiler(compiler.SQLCompiler):
 
         If 'with_aliases' is true, any column names that are duplicated
         (without the table names) are given unique aliases. This is needed in
-        some cases to avoid ambiguitity with nested queries.
+        some cases to avoid ambiguity with nested queries.
 
         This routine is overridden from Query to handle customized selection of
         geometry columns.
         """
-        qn = self.quote_name_unless_alias
+        qn = self
         qn2 = self.connection.ops.quote_name
         result = ['(%s) AS %s' % (self.get_extra_select_format(alias) % col[0], qn2(alias))
                   for alias, col in six.iteritems(self.query.extra_select)]
@@ -123,7 +118,7 @@ class GeoSQLCompiler(compiler.SQLCompiler):
         seen = self.query.included_inherited_models.copy()
         if start_alias:
             seen[None] = start_alias
-        for field, model in opts.get_fields_with_model():
+        for field, model in opts.get_concrete_fields_with_model():
             if from_parent and model is not None and issubclass(from_parent, model):
                 # Avoid loading data for already loaded parents.
                 continue
@@ -132,7 +127,7 @@ class GeoSQLCompiler(compiler.SQLCompiler):
             if table in only_load and field.column not in only_load[table]:
                 continue
             if as_pairs:
-                result.append((alias, field.column))
+                result.append((alias, field))
                 aliases.add(alias)
                 continue
             # This part of the function is customized for GeoQuery. We
@@ -152,37 +147,14 @@ class GeoSQLCompiler(compiler.SQLCompiler):
                     col_aliases.add(field.column)
         return result, aliases
 
-    def resolve_columns(self, row, fields=()):
-        """
-        This routine is necessary so that distances and geometries returned
-        from extra selection SQL get resolved appropriately into Python
-        objects.
-        """
-        values = []
-        aliases = list(self.query.extra_select)
-
-        # Have to set a starting row number offset that is used for
-        # determining the correct starting row index -- needed for
-        # doing pagination with Oracle.
-        rn_offset = 0
-        if self.connection.ops.oracle:
-            if self.query.high_mark is not None or self.query.low_mark: rn_offset = 1
-        index_start = rn_offset + len(aliases)
-
-        # Converting any extra selection values (e.g., geometries and
-        # distance objects added by GeoQuerySet methods).
-        values = [self.query.convert_values(v,
-                               self.query.extra_select_fields.get(a, None),
-                               self.connection)
-                  for v, a in zip(row[rn_offset:index_start], aliases)]
-        if self.connection.ops.oracle or getattr(self.query, 'geo_values', False):
-            # We resolve the rest of the columns if we're on Oracle or if
-            # the `geo_values` attribute is defined.
-            for value, field in zip_longest(row[index_start:], fields):
-                values.append(self.query.convert_values(value, field, self.connection))
-        else:
-            values.extend(row[index_start:])
-        return tuple(values)
+    def get_converters(self, fields):
+        converters = super(GeoSQLCompiler, self).get_converters(fields)
+        for i, alias in enumerate(self.query.extra_select):
+            field = self.query.extra_select_fields.get(alias)
+            if field:
+                backend_converters = self.connection.ops.get_db_converters(field.get_internal_type())
+                converters[i] = (backend_converters, [field.from_db_value], field)
+        return converters
 
     #### Routines unique to GeoQuery ####
     def get_extra_select_format(self, alias):
@@ -226,8 +198,8 @@ class GeoSQLCompiler(compiler.SQLCompiler):
             # transformed geometries have an SRID different than that of the
             # field -- this is only used by `transform` for Oracle and
             # SpatiaLite backends.
-            if self.query.transformed_srid and ( self.connection.ops.oracle or
-                                                 self.connection.ops.spatialite ):
+            if self.query.transformed_srid and (self.connection.ops.oracle or
+                                                self.connection.ops.spatialite):
                 sel_fmt = "'SRID=%d;'||%s" % (self.query.transformed_srid, sel_fmt)
         else:
             sel_fmt = '%s'
@@ -243,71 +215,31 @@ class GeoSQLCompiler(compiler.SQLCompiler):
         used.  If `column` is specified, it will be used instead of the value
         in `field.column`.
         """
-        if table_alias is None: table_alias = self.query.get_meta().db_table
+        if table_alias is None:
+            table_alias = self.query.get_meta().db_table
         return "%s.%s" % (self.quote_name_unless_alias(table_alias),
                           self.connection.ops.quote_name(column or field.column))
+
 
 class SQLInsertCompiler(compiler.SQLInsertCompiler, GeoSQLCompiler):
     pass
 
+
 class SQLDeleteCompiler(compiler.SQLDeleteCompiler, GeoSQLCompiler):
     pass
+
 
 class SQLUpdateCompiler(compiler.SQLUpdateCompiler, GeoSQLCompiler):
     pass
 
+
 class SQLAggregateCompiler(compiler.SQLAggregateCompiler, GeoSQLCompiler):
     pass
 
-class SQLDateCompiler(compiler.SQLDateCompiler, GeoSQLCompiler):
-    """
-    This is overridden for GeoDjango to properly cast date columns, since
-    `GeoQuery.resolve_columns` is used for spatial values.
-    See #14648, #16757.
-    """
-    def results_iter(self):
-        if self.connection.ops.oracle:
-            from django.db.models.fields import DateTimeField
-            fields = [DateTimeField()]
-        else:
-            needs_string_cast = self.connection.features.needs_datetime_string_cast
 
-        offset = len(self.query.extra_select)
-        for rows in self.execute_sql(MULTI):
-            for row in rows:
-                date = row[offset]
-                if self.connection.ops.oracle:
-                    date = self.resolve_columns(row, fields)[offset]
-                elif needs_string_cast:
-                    date = typecast_date(str(date))
-                if isinstance(date, datetime.datetime):
-                    date = date.date()
-                yield date
+class SQLDateCompiler(compiler.SQLDateCompiler, GeoSQLCompiler):
+    pass
+
 
 class SQLDateTimeCompiler(compiler.SQLDateTimeCompiler, GeoSQLCompiler):
-    """
-    This is overridden for GeoDjango to properly cast date columns, since
-    `GeoQuery.resolve_columns` is used for spatial values.
-    See #14648, #16757.
-    """
-    def results_iter(self):
-        if self.connection.ops.oracle:
-            from django.db.models.fields import DateTimeField
-            fields = [DateTimeField()]
-        else:
-            needs_string_cast = self.connection.features.needs_datetime_string_cast
-
-        offset = len(self.query.extra_select)
-        for rows in self.execute_sql(MULTI):
-            for row in rows:
-                datetime = row[offset]
-                if self.connection.ops.oracle:
-                    datetime = self.resolve_columns(row, fields)[offset]
-                elif needs_string_cast:
-                    datetime = typecast_timestamp(str(datetime))
-                # Datetimes are artifically returned in UTC on databases that
-                # don't support time zone. Restore the zone used in the query.
-                if settings.USE_TZ:
-                    datetime = datetime.replace(tzinfo=None)
-                    datetime = timezone.make_aware(datetime, self.query.tzinfo)
-                yield datetime
+    pass

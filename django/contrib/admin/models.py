@@ -3,7 +3,7 @@ from __future__ import unicode_literals
 from django.db import models
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
-from django.contrib.admin.util import quote
+from django.contrib.admin.utils import quote
 from django.core.urlresolvers import reverse, NoReverseMatch
 from django.utils.translation import ugettext, ugettext_lazy as _
 from django.utils.encoding import smart_text
@@ -16,7 +16,10 @@ DELETION = 3
 
 class LogEntryManager(models.Manager):
     def log_action(self, user_id, content_type_id, object_id, object_repr, action_flag, change_message=''):
-        e = self.model(None, None, user_id, content_type_id, smart_text(object_id), object_repr[:200], action_flag, change_message)
+        e = self.model(
+            None, None, user_id, content_type_id, smart_text(object_id),
+            object_repr[:200], action_flag, change_message
+        )
         e.save()
 
 

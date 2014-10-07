@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 from django.utils.datastructures import OrderedSet
 from django.db.migrations.state import ProjectState
 
@@ -33,11 +35,11 @@ class MigrationGraph(object):
     def add_node(self, node, implementation):
         self.nodes[node] = implementation
 
-    def add_dependency(self, child, parent):
+    def add_dependency(self, migration, child, parent):
         if child not in self.nodes:
-            raise KeyError("Dependency references nonexistent child node %r" % (child,))
+            raise KeyError("Migration %s dependencies reference nonexistent child node %r" % (migration, child))
         if parent not in self.nodes:
-            raise KeyError("Dependency references nonexistent parent node %r" % (parent,))
+            raise KeyError("Migration %s dependencies reference nonexistent parent node %r" % (migration, parent))
         self.dependencies.setdefault(child, set()).add(parent)
         self.dependents.setdefault(parent, set()).add(child)
 
@@ -63,18 +65,18 @@ class MigrationGraph(object):
             raise ValueError("Node %r not a valid node" % (node, ))
         return self.dfs(node, lambda x: self.dependents.get(x, set()))
 
-    def root_nodes(self):
+    def root_nodes(self, app=None):
         """
         Returns all root nodes - that is, nodes with no dependencies inside
         their app. These are the starting point for an app.
         """
         roots = set()
         for node in self.nodes:
-            if not any(key[0] == node[0] for key in self.dependencies.get(node, set())):
+            if not any(key[0] == node[0] for key in self.dependencies.get(node, set())) and (not app or app == node[0]):
                 roots.add(node)
-        return roots
+        return sorted(roots)
 
-    def leaf_nodes(self):
+    def leaf_nodes(self, app=None):
         """
         Returns all leaf nodes - that is, nodes with no dependents in their app.
         These are the "most current" version of an app's schema.
@@ -84,43 +86,39 @@ class MigrationGraph(object):
         """
         leaves = set()
         for node in self.nodes:
-            if not any(key[0] == node[0] for key in self.dependents.get(node, set())):
+            if not any(key[0] == node[0] for key in self.dependents.get(node, set())) and (not app or app == node[0]):
                 leaves.add(node)
-        return leaves
+        return sorted(leaves)
 
     def dfs(self, start, get_children):
         """
         Dynamic programming based depth first search, for finding dependencies.
         """
-        cache = {}
-        def _dfs(start, get_children, path):
-            # If we already computed this, use that (dynamic programming)
-            if (start, get_children) in cache:
-                return cache[(start, get_children)]
-            # If we've traversed here before, that's a circular dep
-            if start in path:
-                raise CircularDependencyError(path[path.index(start):] + [start])
-            # Build our own results list, starting with us
-            results = []
-            results.append(start)
-            # We need to add to results all the migrations this one depends on
-            children = sorted(get_children(start))
-            path.append(start)
-            for n in children:
-                results = _dfs(n, get_children, path) + results
-            path.pop()
-            # Use OrderedSet to ensure only one instance of each result
-            results = list(OrderedSet(results))
-            # Populate DP cache
-            cache[(start, get_children)] = results
-            # Done!
-            return results
-        return _dfs(start, get_children, [])
+        visited = []
+        visited.append(start)
+        path = [start]
+        stack = sorted(get_children(start))
+        while stack:
+            node = stack.pop(0)
+
+            if node in path:
+                raise CircularDependencyError()
+            path.append(node)
+
+            visited.insert(0, node)
+            children = sorted(get_children(node))
+
+            if not children:
+                path = []
+
+            stack = children + stack
+
+        return list(OrderedSet(visited))
 
     def __str__(self):
         return "Graph: %s nodes, %s edges" % (len(self.nodes), sum(len(x) for x in self.dependencies.values()))
 
-    def project_state(self, nodes=None, at_end=True):
+    def make_state(self, nodes=None, at_end=True, real_apps=None):
         """
         Given a migration node or nodes, returns a complete ProjectState for it.
         If at_end is False, returns the state before the migration has run.
@@ -139,10 +137,13 @@ class MigrationGraph(object):
                     if not at_end and migration in nodes:
                         continue
                     plan.append(migration)
-        project_state = ProjectState()
+        project_state = ProjectState(real_apps=real_apps)
         for node in plan:
             project_state = self.nodes[node].mutate_state(project_state)
         return project_state
+
+    def __contains__(self, node):
+        return node in self.nodes
 
 
 class CircularDependencyError(Exception):

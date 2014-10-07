@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+import importlib
 import json
 from datetime import datetime
 import re
@@ -13,10 +14,10 @@ except ImportError:
     HAS_YAML = False
 
 
-from django.conf import settings
-from django.core import serializers
+from django.core import management, serializers
 from django.db import transaction, connection
-from django.test import TestCase, TransactionTestCase, Approximate
+from django.test import TestCase, TransactionTestCase, override_settings, skipUnlessDBFeature
+from django.test.utils import Approximate
 from django.utils import six
 from django.utils.six import StringIO
 
@@ -24,22 +25,18 @@ from .models import (Category, Author, Article, AuthorProfile, Actor, Movie,
     Score, Player, Team)
 
 
-class SerializerRegistrationTests(unittest.TestCase):
+@override_settings(
+    SERIALIZATION_MODULES={
+        "json2": "django.core.serializers.json",
+    }
+)
+class SerializerRegistrationTests(TestCase):
     def setUp(self):
-        self.old_SERIALIZATION_MODULES = getattr(settings, 'SERIALIZATION_MODULES', None)
         self.old_serializers = serializers._serializers
-
         serializers._serializers = {}
-        settings.SERIALIZATION_MODULES = {
-            "json2" : "django.core.serializers.json",
-        }
 
     def tearDown(self):
         serializers._serializers = self.old_serializers
-        if self.old_SERIALIZATION_MODULES:
-            settings.SERIALIZATION_MODULES = self.old_SERIALIZATION_MODULES
-        else:
-            delattr(settings, 'SERIALIZATION_MODULES')
 
     def test_register(self):
         "Registering a new serializer populates the full registry. Refs #14823"
@@ -73,6 +70,7 @@ class SerializerRegistrationTests(unittest.TestCase):
 
         self.assertIn('python', all_formats)
         self.assertNotIn('python', public_formats)
+
 
 class SerializersTestBase(object):
     @staticmethod
@@ -146,7 +144,7 @@ class SerializersTestBase(object):
         serialized field list - it replaces the pk identifier.
         """
         profile = AuthorProfile(author=self.joe,
-                                date_of_birth=datetime(1970,1,1))
+                                date_of_birth=datetime(1970, 1, 1))
         profile.save()
         serial_str = serializers.serialize(self.serializer_name,
                                            AuthorProfile.objects.all())
@@ -157,7 +155,7 @@ class SerializersTestBase(object):
 
     def test_serialize_field_subset(self):
         """Tests that output can be restricted to a subset of fields"""
-        valid_fields = ('headline','pub_date')
+        valid_fields = ('headline', 'pub_date')
         invalid_fields = ("author", "categories")
         serial_str = serializers.serialize(self.serializer_name,
                                     Article.objects.all(),
@@ -196,7 +194,7 @@ class SerializersTestBase(object):
         mv.save()
 
         with self.assertNumQueries(0):
-            serial_str = serializers.serialize(self.serializer_name, [mv])
+            serializers.serialize(self.serializer_name, [mv])
 
     def test_serialize_with_null_pk(self):
         """
@@ -244,9 +242,9 @@ class SerializersTestBase(object):
         # Regression for #12524 -- dates before 1000AD get prefixed
         # 0's on the year
         a = Article.objects.create(
-        author = self.jane,
-        headline = "Nobody remembers the early years",
-        pub_date = datetime(1, 2, 3, 4, 5, 6))
+            author=self.jane,
+            headline="Nobody remembers the early years",
+            pub_date=datetime(1, 2, 3, 4, 5, 6))
 
         serial_str = serializers.serialize(self.serializer_name, [a])
         date_values = self._get_field_values(serial_str, "pub_date")
@@ -269,21 +267,19 @@ class SerializersTransactionTestBase(object):
 
     available_apps = ['serializers']
 
+    @skipUnlessDBFeature('supports_forward_references')
     def test_forward_refs(self):
         """
         Tests that objects ids can be referenced before they are
         defined in the serialization data.
         """
-        # The deserialization process needs to be contained
-        # within a transaction in order to test forward reference
-        # handling.
-        transaction.enter_transaction_management()
-        objs = serializers.deserialize(self.serializer_name, self.fwd_ref_str)
-        with connection.constraint_checks_disabled():
-            for obj in objs:
-                obj.save()
-        transaction.commit()
-        transaction.leave_transaction_management()
+        # The deserialization process needs to run in a transaction in order
+        # to test forward reference handling.
+        with transaction.atomic():
+            objs = serializers.deserialize(self.serializer_name, self.fwd_ref_str)
+            with connection.constraint_checks_disabled():
+                for obj in objs:
+                    obj.save()
 
         for model_cls in (Category, Author, Article):
             self.assertEqual(model_cls.objects.all().count(), 1)
@@ -340,6 +336,7 @@ class XmlSerializerTestCase(SerializersTestBase, TestCase):
                     temp.append(child.nodeValue)
                 ret_list.append("".join(temp))
         return ret_list
+
 
 class XmlSerializerTransactionTestCase(SerializersTransactionTestBase, TransactionTestCase):
     serializer_name = "xml"
@@ -438,6 +435,71 @@ class JsonSerializerTransactionTestCase(SerializersTransactionTestBase, Transact
             "name": "Agnes"
         }
     }]"""
+
+
+YAML_IMPORT_ERROR_MESSAGE = r'No module named yaml'
+
+
+class YamlImportModuleMock(object):
+    """Provides a wrapped import_module function to simulate yaml ImportError
+
+    In order to run tests that verify the behavior of the YAML serializer
+    when run on a system that has yaml installed (like the django CI server),
+    mock import_module, so that it raises an ImportError when the yaml
+    serializer is being imported.  The importlib.import_module() call is
+    being made in the serializers.register_serializer().
+
+    Refs: #12756
+    """
+    def __init__(self):
+        self._import_module = importlib.import_module
+
+    def import_module(self, module_path):
+        if module_path == serializers.BUILTIN_SERIALIZERS['yaml']:
+            raise ImportError(YAML_IMPORT_ERROR_MESSAGE)
+
+        return self._import_module(module_path)
+
+
+class NoYamlSerializerTestCase(TestCase):
+    """Not having pyyaml installed provides a misleading error
+
+    Refs: #12756
+    """
+    @classmethod
+    def setUpClass(cls):
+        """Removes imported yaml and stubs importlib.import_module"""
+        super(NoYamlSerializerTestCase, cls).setUpClass()
+
+        cls._import_module_mock = YamlImportModuleMock()
+        importlib.import_module = cls._import_module_mock.import_module
+
+        # clear out cached serializers to emulate yaml missing
+        serializers._serializers = {}
+
+    @classmethod
+    def tearDownClass(cls):
+        """Puts yaml back if necessary"""
+        super(NoYamlSerializerTestCase, cls).tearDownClass()
+
+        importlib.import_module = cls._import_module_mock._import_module
+
+        # clear out cached serializers to clean out BadSerializer instances
+        serializers._serializers = {}
+
+    def test_serializer_pyyaml_error_message(self):
+        """Using yaml serializer without pyyaml raises ImportError"""
+        jane = Author(name="Jane")
+        self.assertRaises(ImportError, serializers.serialize, "yaml", [jane])
+
+    def test_deserializer_pyyaml_error_message(self):
+        """Using yaml deserializer without pyyaml raises ImportError"""
+        self.assertRaises(ImportError, serializers.deserialize, "yaml", "")
+
+    def test_dumpdata_pyyaml_error_message(self):
+        """Calling dumpdata produces an error when yaml package missing"""
+        with six.assertRaisesRegex(self, management.CommandError, YAML_IMPORT_ERROR_MESSAGE):
+            management.call_command('dumpdata', format='yaml')
 
 
 @unittest.skipUnless(HAS_YAML, "No yaml library detected")

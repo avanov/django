@@ -5,16 +5,14 @@ development, and SHOULD NOT be used in a production setting.
 """
 import os
 import posixpath
-try:
-    from urllib.parse import unquote
-except ImportError:     # Python 2
-    from urllib import unquote
 
 from django.conf import settings
 from django.http import Http404
+from django.utils.six.moves.urllib.parse import unquote
 from django.views import static
 
 from django.contrib.staticfiles import finders
+
 
 def serve(request, path, insecure=False, **kwargs):
     """
@@ -23,7 +21,9 @@ def serve(request, path, insecure=False, **kwargs):
 
     To use, put a URL pattern such as::
 
-        (r'^(?P<path>.*)$', 'django.contrib.staticfiles.views.serve')
+        from django.contrib.staticfiles import views
+
+        url(r'^(?P<path>.*)$', views.serve)
 
     in your URLconf.
 

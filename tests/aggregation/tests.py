@@ -6,7 +6,8 @@ import re
 
 from django.db import connection
 from django.db.models import Avg, Sum, Count, Max, Min
-from django.test import TestCase, Approximate
+from django.test import TestCase
+from django.test.utils import Approximate
 from django.test.utils import CaptureQueriesContext
 
 from .models import Author, Publisher, Book, Store
@@ -86,6 +87,31 @@ class BaseAggregateTestCase(TestCase):
             'The Definitive Guide to Django: Web Development Done Right'
         )
         self.assertEqual(b.mean_age, 34.5)
+
+    def test_annotate_defer(self):
+        qs = Book.objects.annotate(
+            page_sum=Sum("pages")).defer('name').filter(pk=1)
+
+        rows = [
+            (1, "159059725", 447, "The Definitive Guide to Django: Web Development Done Right")
+        ]
+        self.assertQuerysetEqual(
+            qs.order_by('pk'), rows,
+            lambda r: (r.id, r.isbn, r.page_sum, r.name)
+        )
+
+    def test_annotate_defer_select_related(self):
+        qs = Book.objects.select_related('contact').annotate(
+            page_sum=Sum("pages")).defer('name').filter(pk=1)
+
+        rows = [
+            (1, "159059725", 447, "Adrian Holovaty",
+             "The Definitive Guide to Django: Web Development Done Right")
+        ]
+        self.assertQuerysetEqual(
+            qs.order_by('pk'), rows,
+            lambda r: (r.id, r.isbn, r.page_sum, r.contact.name, r.name)
+        )
 
     def test_annotate_m2m(self):
         books = Book.objects.filter(rating__lt=4.5).annotate(Avg("authors__age")).order_by("name")
@@ -339,7 +365,7 @@ class BaseAggregateTestCase(TestCase):
             price=Decimal("1000"),
             publisher=p,
             contact_id=1,
-            pubdate=datetime.date(2008,12,1)
+            pubdate=datetime.date(2008, 12, 1)
         )
         Book.objects.create(
             name='ExpensiveBook2',
@@ -349,7 +375,7 @@ class BaseAggregateTestCase(TestCase):
             price=Decimal("1000"),
             publisher=p,
             contact_id=1,
-            pubdate=datetime.date(2008,12,2)
+            pubdate=datetime.date(2008, 12, 2)
         )
         Book.objects.create(
             name='ExpensiveBook3',
@@ -359,7 +385,7 @@ class BaseAggregateTestCase(TestCase):
             price=Decimal("35"),
             publisher=p,
             contact_id=1,
-            pubdate=datetime.date(2008,12,3)
+            pubdate=datetime.date(2008, 12, 3)
         )
 
         publishers = Publisher.objects.annotate(num_books=Count("book__id")).filter(num_books__gt=1).order_by("pk")
@@ -442,7 +468,7 @@ class BaseAggregateTestCase(TestCase):
         vals = Author.objects.filter(pk=1).aggregate(Count("friends__id"))
         self.assertEqual(vals, {"friends__id__count": 2})
 
-        books = Book.objects.annotate(num_authors=Count("authors__name")).filter(num_authors__ge=2).order_by("pk")
+        books = Book.objects.annotate(num_authors=Count("authors__name")).filter(num_authors__exact=2).order_by("pk")
         self.assertQuerysetEqual(
             books, [
                 "The Definitive Guide to Django: Web Development Done Right",

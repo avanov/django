@@ -1,5 +1,5 @@
 """
-21. Specifying 'choices' for a field
+Specifying 'choices' for a field
 
 Most fields take a ``choices`` parameter, which should be a tuple of tuples
 specifying which are the valid values for that field.
@@ -17,6 +17,7 @@ GENDER_CHOICES = (
     ('M', 'Male'),
     ('F', 'Female'),
 )
+
 
 @python_2_unicode_compatible
 class Person(models.Model):

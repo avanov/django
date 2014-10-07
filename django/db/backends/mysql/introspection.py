@@ -1,7 +1,7 @@
 import re
 from .base import FIELD_TYPE
 from django.utils.datastructures import OrderedSet
-from django.db.backends import BaseDatabaseIntrospection, FieldInfo
+from django.db.backends import BaseDatabaseIntrospection, FieldInfo, TableInfo
 from django.utils.encoding import force_text
 
 
@@ -21,7 +21,7 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
         FIELD_TYPE.INT24: 'IntegerField',
         FIELD_TYPE.LONG: 'IntegerField',
         FIELD_TYPE.LONGLONG: 'BigIntegerField',
-        FIELD_TYPE.SHORT: 'IntegerField',
+        FIELD_TYPE.SHORT: 'SmallIntegerField',
         FIELD_TYPE.STRING: 'CharField',
         FIELD_TYPE.TIME: 'TimeField',
         FIELD_TYPE.TIMESTAMP: 'DateTimeField',
@@ -33,9 +33,12 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
     }
 
     def get_table_list(self, cursor):
-        "Returns a list of table names in the current database."
-        cursor.execute("SHOW TABLES")
-        return [row[0] for row in cursor.fetchall()]
+        """
+        Returns a list of table and view names in the current database.
+        """
+        cursor.execute("SHOW FULL TABLES")
+        return [TableInfo(row[0], {'BASE TABLE': 't', 'VIEW': 'v'}.get(row[1]))
+                for row in cursor.fetchall()]
 
     def get_table_description(self, cursor, table_name):
         """
@@ -120,9 +123,19 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
             # It's possible to have the unique and PK constraints in separate indexes.
             if row[2] == 'PRIMARY':
                 indexes[row[4]]['primary_key'] = True
-            if not bool(row[1]):
+            if not row[1]:
                 indexes[row[4]]['unique'] = True
         return indexes
+
+    def get_storage_engine(self, cursor, table_name):
+        """
+        Retrieves the storage engine for a given table.
+        """
+        cursor.execute(
+            "SELECT engine "
+            "FROM information_schema.tables "
+            "WHERE table_name = %s", [table_name])
+        return cursor.fetchone()[0]
 
     def get_constraints(self, cursor, table_name):
         """

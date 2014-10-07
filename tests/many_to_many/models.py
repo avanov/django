@@ -1,5 +1,5 @@
 """
-5. Many-to-many relationships
+Many-to-many relationships
 
 To define a many-to-many relationship, use ``ManyToManyField()``.
 
@@ -21,6 +21,7 @@ class Publication(models.Model):
 
     class Meta:
         ordering = ('title',)
+
 
 @python_2_unicode_compatible
 class Article(models.Model):

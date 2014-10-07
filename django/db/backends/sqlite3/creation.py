@@ -33,6 +33,10 @@ class DatabaseCreation(BaseDatabaseCreation):
         'SmallIntegerField': 'smallint',
         'TextField': 'text',
         'TimeField': 'time',
+        'UUIDField': 'char(32)',
+    }
+    data_types_suffix = {
+        'AutoField': 'AUTOINCREMENT',
     }
 
     def sql_for_pending_references(self, model, style, pending_references):
@@ -44,20 +48,25 @@ class DatabaseCreation(BaseDatabaseCreation):
         return []
 
     def _get_test_db_name(self):
-        test_database_name = self.connection.settings_dict['TEST_NAME']
+        test_database_name = self.connection.settings_dict['TEST']['NAME']
         if test_database_name and test_database_name != ':memory:':
             return test_database_name
         return ':memory:'
 
-    def _create_test_db(self, verbosity, autoclobber):
+    def _create_test_db(self, verbosity, autoclobber, keepdb=False):
         test_database_name = self._get_test_db_name()
+        if keepdb:
+            return test_database_name
         if test_database_name != ':memory:':
             # Erase the old test database
             if verbosity >= 1:
                 print("Destroying old test database '%s'..." % self.connection.alias)
             if os.access(test_database_name, os.F_OK):
                 if not autoclobber:
-                    confirm = input("Type 'yes' if you would like to try deleting the test database '%s', or 'no' to cancel: " % test_database_name)
+                    confirm = input(
+                        "Type 'yes' if you would like to try deleting the test "
+                        "database '%s', or 'no' to cancel: " % test_database_name
+                    )
                 if autoclobber or confirm == 'yes':
                     try:
                         os.remove(test_database_name)
@@ -80,7 +89,7 @@ class DatabaseCreation(BaseDatabaseCreation):
 
         This takes into account the special cases of ":memory:" and "" for
         SQLite since the databases will be distinct despite having the same
-        TEST_NAME. See http://www.sqlite.org/inmemorydb.html
+        TEST NAME. See http://www.sqlite.org/inmemorydb.html
         """
         test_dbname = self._get_test_db_name()
         sig = [self.connection.settings_dict['NAME']]

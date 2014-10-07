@@ -28,6 +28,7 @@ class FunctionalTestCase(unittest.TestCase):
 
             def _get_do(self):
                 raise NotImplementedError
+
             def _set_do(self, value):
                 raise NotImplementedError
             do = lazy_property(_get_do, _set_do)
@@ -51,6 +52,11 @@ class FunctionalTestCase(unittest.TestCase):
             def value(self):
                 return 1, object()
 
+            def other_value(self):
+                return 1
+
+            other = cached_property(other_value, name='other')
+
         a = A()
 
         # check that it is cached
@@ -65,6 +71,10 @@ class FunctionalTestCase(unittest.TestCase):
 
         # check that it behaves like a property when there's no instance
         self.assertIsInstance(A.value, cached_property)
+
+        # check that overriding name works
+        self.assertEqual(a.other, 1)
+        self.assertTrue(callable(a.other_value))
 
     def test_lazy_equality(self):
         """

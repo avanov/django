@@ -1,4 +1,4 @@
-from django.conf.urls import patterns, url
+from django.conf.urls import url
 from django.contrib import messages
 from django.core.urlresolvers import reverse
 from django import forms
@@ -20,6 +20,7 @@ TEMPLATE = """{% if messages %}
 {% endif %}
 """
 
+
 @never_cache
 def add(request, message_type):
     # don't default to False here, because we want to test that it defaults
@@ -32,21 +33,24 @@ def add(request, message_type):
         else:
             getattr(messages, message_type)(request, msg)
 
-    show_url = reverse('django.contrib.messages.tests.urls.show')
+    show_url = reverse('show_message')
     return HttpResponseRedirect(show_url)
+
 
 @never_cache
 def add_template_response(request, message_type):
     for msg in request.POST.getlist('messages'):
         getattr(messages, message_type)(request, msg)
 
-    show_url = reverse('django.contrib.messages.tests.urls.show_template_response')
+    show_url = reverse('show_template_response')
     return HttpResponseRedirect(show_url)
+
 
 @never_cache
 def show(request):
     t = Template(TEMPLATE)
     return HttpResponse(t.render(RequestContext(request)))
+
 
 @never_cache
 def show_template_response(request):
@@ -64,10 +68,11 @@ class ContactFormViewWithMsg(SuccessMessageMixin, FormView):
     success_message = "%(name)s was created successfully"
 
 
-urlpatterns = patterns('',
-    ('^add/(debug|info|success|warning|error)/$', add),
+urlpatterns = [
+    url('^add/(debug|info|success|warning|error)/$', add, name='add_message'),
     url('^add/msg/$', ContactFormViewWithMsg.as_view(), name='add_success_msg'),
-    ('^show/$', show),
-    ('^template_response/add/(debug|info|success|warning|error)/$', add_template_response),
-    ('^template_response/show/$', show_template_response),
-)
+    url('^show/$', show, name='show_message'),
+    url('^template_response/add/(debug|info|success|warning|error)/$',
+        add_template_response, name='add_template_response'),
+    url('^template_response/show/$', show_template_response, name='show_template_response'),
+]

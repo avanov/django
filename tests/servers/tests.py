@@ -5,16 +5,14 @@ Tests for django.core.servers.
 from __future__ import unicode_literals
 
 import os
-try:
-    from urllib.request import urlopen, HTTPError
-except ImportError:     # Python 2
-    from urllib2 import urlopen, HTTPError
+import socket
 
 from django.core.exceptions import ImproperlyConfigured
 from django.test import LiveServerTestCase
-from django.core.servers.basehttp import WSGIServerException
-from django.test.utils import override_settings
+from django.test import override_settings
 from django.utils.http import urlencode
+from django.utils.six.moves.urllib.error import HTTPError
+from django.utils.six.moves.urllib.request import urlopen
 from django.utils._os import upath
 
 from .models import Person
@@ -29,6 +27,7 @@ TEST_SETTINGS = {
 }
 
 
+@override_settings(ROOT_URLCONF='servers.urls')
 class LiveServerBase(LiveServerTestCase):
 
     available_apps = [
@@ -38,7 +37,6 @@ class LiveServerBase(LiveServerTestCase):
         'django.contrib.sessions',
     ]
     fixtures = ['testdata.json']
-    urls = 'servers.urls'
 
     @classmethod
     def setUpClass(cls):
@@ -73,7 +71,7 @@ class LiveServerAddress(LiveServerBase):
         cls.raises_exception('localhost', ImproperlyConfigured)
 
         # The host must be valid
-        cls.raises_exception('blahblahblah:8081', WSGIServerException)
+        cls.raises_exception('blahblahblah:8081', socket.error)
 
         # The list of ports must be in a valid format
         cls.raises_exception('localhost:8081,', ImproperlyConfigured)
@@ -109,6 +107,7 @@ class LiveServerAddress(LiveServerBase):
         # test runner and the overridden setUpClass() method is executed.
         pass
 
+
 class LiveServerViews(LiveServerBase):
     def test_404(self):
         """
@@ -141,7 +140,7 @@ class LiveServerViews(LiveServerBase):
     def test_no_collectstatic_emulation(self):
         """
         Test that LiveServerTestCase reports a 404 status code when HTTP client
-        tries to access a static file that isn't explictly put under
+        tries to access a static file that isn't explicitly put under
         STATIC_ROOT.
         """
         try:

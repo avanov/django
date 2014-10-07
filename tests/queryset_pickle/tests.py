@@ -2,16 +2,18 @@ from __future__ import unicode_literals
 
 import pickle
 import datetime
+import warnings
 
-from django.db import models
 from django.test import TestCase
+from django.utils.encoding import force_text
+from django.utils.version import get_major_version, get_version
 
 from .models import Group, Event, Happening, Container, M2MModel
 
 
 class PickleabilityTestCase(TestCase):
     def setUp(self):
-        Happening.objects.create() # make sure the defaults are working (#20158)
+        Happening.objects.create()  # make sure the defaults are working (#20158)
 
     def assert_pickles(self, qs):
         self.assertEqual(list(pickle.loads(pickle.dumps(qs))), list(qs))
@@ -50,6 +52,9 @@ class PickleabilityTestCase(TestCase):
         # can't just use assertEqual(original, unpickled)
         self.assertEqual(original.__class__, unpickled.__class__)
         self.assertEqual(original.args, unpickled.args)
+
+    def test_manager_pickle(self):
+        pickle.loads(pickle.dumps(Happening.objects))
 
     def test_model_pickle(self):
         """
@@ -94,3 +99,41 @@ class PickleabilityTestCase(TestCase):
     def test_specialized_queryset(self):
         self.assert_pickles(Happening.objects.values('name'))
         self.assert_pickles(Happening.objects.values('name').dates('when', 'year'))
+
+    def test_pickle_prefetch_related_idempotence(self):
+        g = Group.objects.create(name='foo')
+        groups = Group.objects.prefetch_related('event_set')
+
+        # First pickling
+        groups = pickle.loads(pickle.dumps(groups))
+        self.assertQuerysetEqual(groups, [g], lambda x: x)
+
+        # Second pickling
+        groups = pickle.loads(pickle.dumps(groups))
+        self.assertQuerysetEqual(groups, [g], lambda x: x)
+
+    def test_missing_django_version_unpickling(self):
+        """
+        #21430 -- Verifies a warning is raised for querysets that are
+        unpickled without a Django version
+        """
+        qs = Group.missing_django_version_objects.all()
+        with warnings.catch_warnings(record=True) as recorded:
+            pickle.loads(pickle.dumps(qs))
+            msg = force_text(recorded.pop().message)
+            self.assertEqual(msg,
+                "Pickled queryset instance's Django version is not specified.")
+
+    def test_unsupported_unpickle(self):
+        """
+        #21430 -- Verifies a warning is raised for querysets that are
+        unpickled with a different Django version than the current
+        """
+        qs = Group.previous_django_version_objects.all()
+        with warnings.catch_warnings(record=True) as recorded:
+            pickle.loads(pickle.dumps(qs))
+            msg = force_text(recorded.pop().message)
+            self.assertEqual(msg,
+                "Pickled queryset instance's Django version %s does not "
+                "match the current version %s."
+                % (str(float(get_major_version()) - 0.1), get_version()))

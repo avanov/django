@@ -30,6 +30,7 @@ ISO_INPUT_FORMATS = {
     ),
 }
 
+
 def reset_format_cache():
     """Clear any cached formats.
 
@@ -40,25 +41,35 @@ def reset_format_cache():
     _format_cache = {}
     _format_modules_cache = {}
 
-def iter_format_modules(lang):
+
+def iter_format_modules(lang, format_module_path=None):
     """
     Does the heavy lifting of finding format modules.
     """
-    if check_for_language(lang):
-        format_locations = ['django.conf.locale.%s']
-        if settings.FORMAT_MODULE_PATH:
-            format_locations.append(settings.FORMAT_MODULE_PATH + '.%s')
-            format_locations.reverse()
-        locale = to_locale(lang)
-        locales = [locale]
-        if '_' in locale:
-            locales.append(locale.split('_')[0])
-        for location in format_locations:
-            for loc in locales:
-                try:
-                    yield import_module('%s.formats' % (location % loc))
-                except ImportError:
-                    pass
+    if not check_for_language(lang):
+        return
+
+    if format_module_path is None:
+        format_module_path = settings.FORMAT_MODULE_PATH
+
+    format_locations = []
+    if format_module_path:
+        if isinstance(format_module_path, six.string_types):
+            format_module_path = [format_module_path]
+        for path in format_module_path:
+            format_locations.append(path + '.%s')
+    format_locations.append('django.conf.locale.%s')
+    locale = to_locale(lang)
+    locales = [locale]
+    if '_' in locale:
+        locales.append(locale.split('_')[0])
+    for location in format_locations:
+        for loc in locales:
+            try:
+                yield import_module('%s.formats' % (location % loc))
+            except ImportError:
+                pass
+
 
 def get_format_modules(lang=None, reverse=False):
     """
@@ -66,10 +77,11 @@ def get_format_modules(lang=None, reverse=False):
     """
     if lang is None:
         lang = get_language()
-    modules = _format_modules_cache.setdefault(lang, list(iter_format_modules(lang)))
+    modules = _format_modules_cache.setdefault(lang, list(iter_format_modules(lang, settings.FORMAT_MODULE_PATH)))
     if reverse:
         return list(reversed(modules))
     return modules
+
 
 def get_format(format_type, lang=None, use_l10n=None):
     """
@@ -110,6 +122,7 @@ def get_format(format_type, lang=None, use_l10n=None):
 
 get_format_lazy = lazy(get_format, six.text_type, list, tuple)
 
+
 def date_format(value, format=None, use_l10n=None):
     """
     Formats a datetime.date or datetime.datetime object using a
@@ -120,6 +133,7 @@ def date_format(value, format=None, use_l10n=None):
     """
     return dateformat.format(value, get_format(format or 'DATE_FORMAT', use_l10n=use_l10n))
 
+
 def time_format(value, format=None, use_l10n=None):
     """
     Formats a datetime.time object using a localizable format
@@ -128,6 +142,7 @@ def time_format(value, format=None, use_l10n=None):
     be localized (or not), overriding the value of settings.USE_L10N.
     """
     return dateformat.time_format(value, get_format(format or 'TIME_FORMAT', use_l10n=use_l10n))
+
 
 def number_format(value, decimal_pos=None, use_l10n=None, force_grouping=False):
     """
@@ -148,6 +163,7 @@ def number_format(value, decimal_pos=None, use_l10n=None, force_grouping=False):
         get_format('THOUSAND_SEPARATOR', lang, use_l10n=use_l10n),
         force_grouping=force_grouping
     )
+
 
 def localize(value, use_l10n=None):
     """
@@ -170,6 +186,7 @@ def localize(value, use_l10n=None):
     else:
         return value
 
+
 def localize_input(value, default=None):
     """
     Checks if an input value is a localizable type and returns it
@@ -190,6 +207,7 @@ def localize_input(value, default=None):
         return value.strftime(format)
     return value
 
+
 def sanitize_separators(value):
     """
     Sanitizes a value according to the current decimal and
@@ -203,9 +221,13 @@ def sanitize_separators(value):
             parts.append(decimals)
         if settings.USE_THOUSAND_SEPARATOR:
             thousand_sep = get_format('THOUSAND_SEPARATOR')
-            for replacement in set([
-                    thousand_sep, unicodedata.normalize('NFKD', thousand_sep)]):
-                value = value.replace(replacement, '')
+            if thousand_sep == '.' and value.count('.') == 1 and len(value.split('.')[-1]) != 3:
+                # Special case where we suspect a dot meant decimal separator (see #22171)
+                pass
+            else:
+                for replacement in {
+                        thousand_sep, unicodedata.normalize('NFKD', thousand_sep)}:
+                    value = value.replace(replacement, '')
         parts.append(value)
         value = '.'.join(reversed(parts))
     return value

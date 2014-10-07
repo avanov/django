@@ -1,8 +1,11 @@
+# -*- coding: utf-8 -*-
+from __future__ import unicode_literals
+
 from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    
+
     operations = [
 
         migrations.CreateModel(
@@ -22,6 +25,11 @@ class Migration(migrations.Migration):
                 ("id", models.AutoField(primary_key=True)),
                 ("fluffy", models.BooleanField(default=True)),
             ],
-        )
-        
+        ),
+
+        migrations.AlterUniqueTogether(
+            name='author',
+            unique_together=set([('name', 'slug')]),
+        ),
+
     ]
