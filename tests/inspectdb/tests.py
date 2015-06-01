@@ -51,6 +51,7 @@ class InspectDBTestCase(TestCase):
         if (connection.features.can_introspect_max_length and
                 not connection.features.interprets_empty_strings_as_nulls):
             assertFieldType('char_field', "models.CharField(max_length=10)")
+            assertFieldType('null_char_field', "models.CharField(max_length=10, blank=True, null=True)")
             assertFieldType('comma_separated_int_field', "models.CharField(max_length=99)")
         assertFieldType('date_field', "models.DateField()")
         assertFieldType('date_time_field', "models.DateTimeField()")
@@ -60,11 +61,9 @@ class InspectDBTestCase(TestCase):
             assertFieldType('file_field', "models.CharField(max_length=100)")
             assertFieldType('file_path_field', "models.CharField(max_length=100)")
         if connection.features.can_introspect_ip_address_field:
-            assertFieldType('ip_address_field', "models.GenericIPAddressField()")
             assertFieldType('gen_ip_adress_field', "models.GenericIPAddressField()")
         elif (connection.features.can_introspect_max_length and
                 not connection.features.interprets_empty_strings_as_nulls):
-            assertFieldType('ip_address_field', "models.CharField(max_length=15)")
             assertFieldType('gen_ip_adress_field', "models.CharField(max_length=39)")
         if (connection.features.can_introspect_max_length and
                 not connection.features.interprets_empty_strings_as_nulls):

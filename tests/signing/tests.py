@@ -1,14 +1,15 @@
 from __future__ import unicode_literals
 
-import time
+import datetime
 
 from django.core import signing
-from django.test import TestCase
-from django.utils.encoding import force_str
+from django.test import SimpleTestCase
+from django.test.utils import freeze_time
 from django.utils import six
+from django.utils.encoding import force_str
 
 
-class TestSigner(TestCase):
+class TestSigner(SimpleTestCase):
 
     def test_signature(self):
         "signature() method should generate a signature"
@@ -112,23 +113,19 @@ class TestSigner(TestCase):
         self.assertEqual('foo:6NB0fssLW5RQvZ3Y-MTerq2rX7w', s.sign('foo'))
 
 
-class TestTimestampSigner(TestCase):
+class TestTimestampSigner(SimpleTestCase):
 
     def test_timestamp_signer(self):
         value = 'hello'
-        _time = time.time
-        time.time = lambda: 123456789
-        try:
+        with freeze_time(123456789):
             signer = signing.TimestampSigner('predictable-key')
             ts = signer.sign(value)
             self.assertNotEqual(ts,
                 signing.Signer('predictable-key').sign(value))
-
             self.assertEqual(signer.unsign(ts), value)
-            time.time = lambda: 123456800
+
+        with freeze_time(123456800):
             self.assertEqual(signer.unsign(ts, max_age=12), value)
-            self.assertEqual(signer.unsign(ts, max_age=11), value)
-            self.assertRaises(
-                signing.SignatureExpired, signer.unsign, ts, max_age=10)
-        finally:
-            time.time = _time
+            # max_age parameter can also accept a datetime.timedelta object
+            self.assertEqual(signer.unsign(ts, max_age=datetime.timedelta(seconds=11)), value)
+            self.assertRaises(signing.SignatureExpired, signer.unsign, ts, max_age=10)

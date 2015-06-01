@@ -1,6 +1,7 @@
 from __future__ import unicode_literals
 
 import logging
+import logging.config  # needed when logging_config doesn't start with logging.config
 import sys
 import warnings
 
@@ -11,12 +12,6 @@ from django.utils.deprecation import RemovedInNextVersionWarning
 from django.utils.encoding import force_text
 from django.utils.module_loading import import_string
 from django.views.debug import ExceptionReporter, get_exception_reporter_filter
-
-# Imports kept for backwards-compatibility in Django 1.7.
-from logging import NullHandler  # NOQA
-from logging.config import dictConfig  # NOQA
-
-getLogger = logging.getLogger
 
 # Default logging for Django. This sends an email to the site admins on every
 # HTTP 500 error. Depending on DEBUG, all other log records are either sent to
@@ -38,9 +33,6 @@ DEFAULT_LOGGING = {
             'filters': ['require_debug_true'],
             'class': 'logging.StreamHandler',
         },
-        'null': {
-            'class': 'logging.NullHandler',
-        },
         'mail_admins': {
             'level': 'ERROR',
             'filters': ['require_debug_false'],
@@ -49,17 +41,7 @@ DEFAULT_LOGGING = {
     },
     'loggers': {
         'django': {
-            'handlers': ['console'],
-        },
-        'django.request': {
-            'handlers': ['mail_admins'],
-            'level': 'ERROR',
-            'propagate': False,
-        },
-        'django.security': {
-            'handlers': ['mail_admins'],
-            'level': 'ERROR',
-            'propagate': False,
+            'handlers': ['console', 'mail_admins'],
         },
         'py.warnings': {
             'handlers': ['console'],
@@ -80,7 +62,7 @@ def configure_logging(logging_config, logging_settings):
         # First find the logging configuration function ...
         logging_config_func = import_string(logging_config)
 
-        dictConfig(DEFAULT_LOGGING)
+        logging.config.dictConfig(DEFAULT_LOGGING)
 
         # ... then invoke it with the logging settings
         if logging_settings:
@@ -109,7 +91,7 @@ class AdminEmailHandler(logging.Handler):
                 record.getMessage()
             )
             filter = get_exception_reporter_filter(request)
-            request_repr = '\n{0}'.format(force_text(filter.get_request_repr(request)))
+            request_repr = '\n{}'.format(force_text(filter.get_request_repr(request)))
         except Exception:
             subject = '%s: %s' % (
                 record.levelname,
@@ -127,9 +109,10 @@ class AdminEmailHandler(logging.Handler):
         message = "%s\n\nRequest repr(): %s" % (self.format(record), request_repr)
         reporter = ExceptionReporter(request, is_email=True, *exc_info)
         html_message = reporter.get_traceback_html() if self.include_html else None
-        mail.mail_admins(subject, message, fail_silently=True,
-                         html_message=html_message,
-                         connection=self.connection())
+        self.send_mail(subject, message, fail_silently=True, html_message=html_message)
+
+    def send_mail(self, subject, message, *args, **kwargs):
+        mail.mail_admins(subject, message, *args, connection=self.connection(), **kwargs)
 
     def connection(self):
         return get_connection(backend=self.email_backend, fail_silently=True)

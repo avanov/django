@@ -293,7 +293,7 @@ See the :doc:`validators documentation </ref/validators>` for more information.
 
 .. attribute:: Field.localize
 
-The ``localize`` argument enables the localization of form data, input as well
+The ``localize`` argument enables the localization of form data input, as well
 as the rendered output.
 
 See the :ref:`format localization <format-localization>` documentation for
@@ -387,10 +387,16 @@ For each field, we describe the default widget used if you don't specify
 
     .. attribute:: choices
 
-        An iterable (e.g., a list or tuple) of 2-tuples to use as choices for this
-        field. This argument accepts the same formats as the ``choices`` argument
-        to a model field. See the :ref:`model field reference documentation on
-        choices <field-choices>` for more details.
+        Either an iterable (e.g., a list or tuple) of 2-tuples to use as
+        choices for this field, or a callable that returns such an iterable.
+        This argument accepts the same formats as the ``choices`` argument to a
+        model field. See the :ref:`model field reference documentation on
+        choices <field-choices>` for more details. If the argument is a
+        callable, it is evaluated each time the field's form is initialized.
+
+        .. versionchanged:: 1.8
+
+            The ability to pass a callable to ``choices`` was added.
 
 ``TypedChoiceField``
 ~~~~~~~~~~~~~~~~~~~~
@@ -496,12 +502,6 @@ For each field, we describe the default widget used if you don't specify
 
     See also :ref:`format localization <format-localization>`.
 
-    .. deprecated:: 1.7
-
-        The ability to use :class:`SplitDateTimeWidget` with ``DateTimeField``
-        has been deprecated and will be removed in Django 1.9. Use
-        :class:`SplitDateTimeField` instead.
-
 ``DecimalField``
 ~~~~~~~~~~~~~~~~
 
@@ -539,6 +539,23 @@ For each field, we describe the default widget used if you don't specify
     .. attribute:: decimal_places
 
         The maximum number of decimal places permitted.
+
+``DurationField``
+~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 1.8
+
+.. class:: DurationField(**kwargs)
+
+    * Default widget: :class:`TextInput`
+    * Empty value: ``None``
+    * Normalizes to: A Python :class:`~python:datetime.timedelta`.
+    * Validates that the given value is a string which can be converted into a
+      ``timedelta``.
+    * Error message keys: ``required``, ``invalid``.
+
+    Accepts any format understood by
+    :func:`~django.utils.dateparse.parse_duration`.
 
 ``EmailField``
 ~~~~~~~~~~~~~~
@@ -636,7 +653,7 @@ For each field, we describe the default widget used if you don't specify
       ``False``, else :class:`TextInput`.
     * Empty value: ``None``
     * Normalizes to: A Python float.
-    * Validates that the given value is an float. Leading and trailing
+    * Validates that the given value is a float. Leading and trailing
       whitespace is allowed, as in Python's ``float()`` function.
     * Error message keys: ``required``, ``invalid``, ``max_value``,
       ``min_value``
@@ -701,22 +718,6 @@ For each field, we describe the default widget used if you don't specify
     .. attribute:: min_value
 
     These control the range of values permitted in the field.
-
-``IPAddressField``
-~~~~~~~~~~~~~~~~~~
-
-.. class:: IPAddressField(**kwargs)
-
-    .. deprecated:: 1.7
-        This field has been deprecated in favor of
-        :class:`~django.forms.GenericIPAddressField`.
-
-    * Default widget: :class:`TextInput`
-    * Empty value: ``''`` (an empty string)
-    * Normalizes to: A Unicode object.
-    * Validates that the given value is a valid IPv4 address, using a regular
-      expression.
-    * Error message keys: ``required``, ``invalid``
 
 ``GenericIPAddressField``
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -889,7 +890,7 @@ For each field, we describe the default widget used if you don't specify
     These are the same as ``CharField.max_length`` and ``CharField.min_length``.
 
 ``UUIDField``
--------------
+~~~~~~~~~~~~~
 
 .. versionadded:: 1.8
 
@@ -914,7 +915,7 @@ Slightly complex built-in ``Field`` classes
     * Default widget: :class:`TextInput`
     * Empty value: ``''`` (an empty string)
     * Normalizes to: A Unicode object.
-    * Validates that the given value against each of the fields specified
+    * Validates the given value against each of the fields specified
       as an argument to the ``ComboField``.
     * Error message keys: ``required``, ``invalid``
 
@@ -942,7 +943,7 @@ Slightly complex built-in ``Field`` classes
     * Default widget: :class:`TextInput`
     * Empty value: ``''`` (an empty string)
     * Normalizes to: the type returned by the ``compress`` method of the subclass.
-    * Validates that the given value against each of the fields specified
+    * Validates the given value against each of the fields specified
       as an argument to the ``MultiValueField``.
     * Error message keys: ``required``, ``invalid``, ``incomplete``
 
@@ -968,8 +969,6 @@ Slightly complex built-in ``Field`` classes
     Also takes one extra optional argument:
 
     .. attribute:: require_all_fields
-
-        .. versionadded:: 1.7
 
         Defaults to ``True``, in which case a ``required`` validation error
         will be raised if no value is supplied for any field.

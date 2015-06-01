@@ -12,10 +12,13 @@ This document contains all the API references of :class:`Field` including the
 
 .. seealso::
 
-    If the built-in fields don't do the trick, you can try :doc:`localflavor
-    </topics/localflavor>`, which contains assorted pieces of code
-    that are useful for particular countries or cultures. Also, you can easily
-    :doc:`write your own custom model fields </howto/custom-model-fields>`.
+    If the built-in fields don't do the trick, you can try `django-localflavor
+    <https://github.com/django/django-localflavor>`_ (`documentation
+    <https://django-localflavor.readthedocs.org/>`_), which contains assorted
+    pieces of code that are useful for particular countries and cultures.
+
+    Also, you can easily :doc:`write your own custom model fields
+    </howto/custom-model-fields>`.
 
 .. note::
 
@@ -156,8 +159,6 @@ This lets you construct choices dynamically. But if you find yourself hacking
 database table with a :class:`ForeignKey`. :attr:`~Field.choices` is meant for
 static data that doesn't change much, if ever.
 
-.. versionadded:: 1.7
-
 Unless :attr:`blank=False<Field.blank>` is set on the field along with a
 :attr:`~Field.default` then a label containing ``"---------"`` will be rendered
 with the select box. To override this behavior, add a tuple to ``choices``
@@ -183,8 +184,7 @@ scenes.
 
 .. attribute:: Field.db_index
 
-If ``True``, :djadmin:`django-admin sqlindexes <sqlindexes>` will output a
-``CREATE INDEX`` statement for this field.
+If ``True``, a database index will be created for this field.
 
 ``db_tablespace``
 -----------------
@@ -220,6 +220,15 @@ Note that ``lambda``\s cannot be used for field options like ``default``
 because they cannot be :ref:`serialized by migrations <migration-serializing>`.
 See that documentation for other caveats.
 
+The default value is used when new model instances are created and a value
+isn't provided for the field. When the field is a primary key, the default is
+also used when the field is set to ``None``.
+
+.. versionchanged:: 1.8
+
+    The default wasn't used for ``None`` primary key values in previous
+    versions.
+
 ``editable``
 ------------
 
@@ -241,10 +250,6 @@ want to override.
 Error message keys include ``null``, ``blank``, ``invalid``, ``invalid_choice``,
 ``unique``, and ``unique_for_date``. Additional error message keys are
 specified for each field in the `Field types`_ section below.
-
-.. versionadded:: 1.7
-
-The ``unique_for_date`` error message key was added.
 
 ``help_text``
 -------------
@@ -278,8 +283,13 @@ don't need to set ``primary_key=True`` on any of your fields unless you want to
 override the default primary-key behavior. For more, see
 :ref:`automatic-primary-key-fields`.
 
-``primary_key=True`` implies :attr:`null=False <Field.null>` and :attr:`unique=True <Field.unique>`.
-Only one primary key is allowed on an object.
+``primary_key=True`` implies :attr:`null=False <Field.null>` and
+:attr:`unique=True <Field.unique>`. Only one primary key is allowed on an
+object.
+
+The primary key field is read-only. If you change the value of the primary
+key on an existing object and then save it, a new object will be created
+alongside the old one.
 
 ``unique``
 ----------
@@ -495,6 +505,15 @@ Any combination of these options will result in an error.
     ``True`` will cause the field to have ``editable=False`` and ``blank=True``
     set.
 
+.. note::
+    The ``auto_now`` and ``auto_now_add`` options will always use the date in
+    the :ref:`default timezone <default-current-time-zone>` at the moment of
+    creation or update. If you need something different, you may want to
+    consider simply using your own callable default or overriding ``save()``
+    instead of using ``auto_now`` or ``auto_now_add``; or using a
+    ``DateTimeField`` instead of a ``DateField`` and deciding how to handle the
+    conversion from datetime to date at display time.
+
 ``DateTimeField``
 -----------------
 
@@ -542,6 +561,24 @@ The default form widget for this field is a :class:`~django.forms.TextInput`.
     :class:`FloatField` and :class:`DecimalField` classes, please
     see :ref:`FloatField vs. DecimalField <floatfield_vs_decimalfield>`.
 
+``DurationField``
+-----------------
+
+.. versionadded:: 1.8
+
+.. class:: DurationField([**options])
+
+A field for storing periods of time - modeled in Python by
+:class:`~python:datetime.timedelta`. When used on PostgreSQL, the data type
+used is an ``interval`` and on Oracle the data type is ``INTERVAL DAY(9) TO
+SECOND(6)``. Otherwise a ``bigint`` of microseconds is used.
+
+.. note::
+
+    Arithmetic with ``DurationField`` works in most cases. However on all
+    databases other than PostgreSQL, comparing the value of a ``DurationField``
+    to arithmetic on ``DateTimeField`` instances will not work as expected.
+
 ``EmailField``
 --------------
 
@@ -570,23 +607,32 @@ Has two optional arguments:
 
 .. attribute:: FileField.upload_to
 
-    .. versionchanged:: 1.7
+    This attribute provides a way of setting the upload directory and file name,
+    and can be set in two ways. In both cases, the value is passed to the
+    :meth:`Storage.save() <django.core.files.storage.Storage.save>` method.
 
-        ``upload_to`` was required in older versions of Django.
+    If you specify a string value, it may contain :func:`~time.strftime`
+    formatting, which will be replaced by the date/time of the file upload (so
+    that uploaded files don't fill up the given directory). For example::
 
-    A local filesystem path that will be appended to your :setting:`MEDIA_ROOT`
-    setting to determine the value of the
-    :attr:`~django.db.models.fields.files.FieldFile.url` attribute.
+        class MyModel(models.Model):
+            # file will be uploaded to MEDIA_ROOT/uploads
+            upload = models.FileField(upload_to='uploads/')
+            # or...
+            # file will be saved to MEDIA_ROOT/uploads/2015/01/30
+            upload = models.FileField(upload_to='uploads/%Y/%m/%d/')
 
-    This path may contain :func:`~time.strftime` formatting, which will be
-    replaced by the date/time of the file upload (so that uploaded files don't
-    fill up the given directory).
+    If you are using the default
+    :class:`~django.core.files.storage.FileSystemStorage`, the string value
+    will be appended to your :setting:`MEDIA_ROOT` path to form the location on
+    the local filesystem where uploaded files will be stored. If you are using
+    a different storage, check that storage's documentation to see how it
+    handles ``upload_to``.
 
-    This may also be a callable, such as a function, which will be called to
-    obtain the upload path, including the filename. This callable must be able
-    to accept two arguments, and return a Unix-style path (with forward slashes)
-    to be passed along to the storage system. The two arguments that will be
-    passed are:
+    ``upload_to`` may also be a callable, such as a function. This will be
+    called to obtain the upload path, including the filename. This callable must
+    accept two arguments and return a Unix-style path (with forward slashes)
+    to be passed along to the storage system. The two arguments are:
 
     ======================  ===============================================
     Argument                Description
@@ -605,6 +651,15 @@ Has two optional arguments:
                             file. This may or may not be taken into account
                             when determining the final destination path.
     ======================  ===============================================
+
+    For example::
+
+        def user_directory_path(instance, filename):
+            # file will be uploaded to MEDIA_ROOT/user_<id>/<filename>
+            return 'user_{0}/{1}'.format(instance.user.id, filename)
+
+        class MyModel(models.Model):
+            upload = models.FileField(upload_to=user_directory_path)
 
 .. attribute:: FileField.storage
 
@@ -672,8 +727,8 @@ Also note that even an uploaded HTML file, since it can be executed by the
 browser (though not by the server), can pose security threats that are
 equivalent to XSS or CSRF attacks.
 
-By default, :class:`FileField` instances are
-created as ``varchar(100)`` columns in your database. As with other fields, you
+:class:`FileField` instances are created in your database as ``varchar``
+columns with a default max length of 100 characters. As with other fields, you
 can change the maximum length using the :attr:`~CharField.max_length` argument.
 
 FileField and FieldFile
@@ -685,8 +740,9 @@ FileField and FieldFile
 
 When you access a :class:`~django.db.models.FileField` on a model, you are
 given an instance of :class:`FieldFile` as a proxy for accessing the underlying
-file. This class has several attributes and methods that can be used to
-interact with file data:
+file. In addition to the functionality inherited from
+:class:`django.core.files.File`, this class has several attributes and methods
+that can be used to interact with file data:
 
 .. attribute:: FieldFile.url
 
@@ -714,8 +770,9 @@ method is used to persist that file data.
 
 Takes two required arguments: ``name`` which is the name of the file, and
 ``content`` which is an object containing the file's contents.  The
-optional ``save`` argument controls whether or not the instance is
-saved after the file has been altered. Defaults to ``True``.
+optional ``save`` argument controls whether or not the model instance is
+saved after the file associated with this field has been altered. Defaults to
+``True``.
 
 Note that the ``content`` argument should be an instance of
 :class:`django.core.files.File`, not Python's built-in file object.
@@ -740,8 +797,9 @@ Deletes the file associated with this instance and clears all attributes on
 the field. Note: This method will close the file if it happens to be open when
 ``delete()`` is called.
 
-The optional ``save`` argument controls whether or not the instance is saved
-after the file has been deleted. Defaults to ``True``.
+The optional ``save`` argument controls whether or not the model instance is
+saved after the file associated with this field has been deleted. Defaults to
+``True``.
 
 Note that when a model is deleted, related files are not deleted. If you need
 to cleanup orphaned files, you'll need to handle it yourself (for instance,
@@ -799,8 +857,8 @@ base filename, not the full path. So, this example::
 because the :attr:`~FilePathField.match` applies to the base filename
 (``foo.png`` and ``bar.png``).
 
-By default, :class:`FilePathField` instances are
-created as ``varchar(100)`` columns in your database. As with other fields, you
+:class:`FilePathField` instances are created in your database as ``varchar``
+columns with a default max length of 100 characters. As with other fields, you
 can change the maximum length using the :attr:`~CharField.max_length` argument.
 
 ``FloatField``
@@ -851,9 +909,9 @@ Requires the `Pillow`_ library.
 
 .. _Pillow: http://pillow.readthedocs.org/en/latest/
 
-By default, :class:`ImageField` instances are created as ``varchar(100)``
-columns in your database. As with other fields, you can change the maximum
-length using the :attr:`~CharField.max_length` argument.
+:class:`ImageField` instances are created in your database as ``varchar``
+columns with a default max length of 100 characters. As with other fields, you
+can change the maximum length using the :attr:`~CharField.max_length` argument.
 
 The default form widget for this field is a
 :class:`~django.forms.ClearableFileInput`.
@@ -866,18 +924,6 @@ The default form widget for this field is a
 An integer. Values from ``-2147483648`` to ``2147483647`` are safe in all
 databases supported by Django. The default form widget for this field is a
 :class:`~django.forms.TextInput`.
-
-``IPAddressField``
-------------------
-
-.. class:: IPAddressField([**options])
-
-.. deprecated:: 1.7
-    This field has been deprecated in favor of
-    :class:`~django.db.models.GenericIPAddressField`.
-
-An IP address, in string format (e.g. "192.0.2.30"). The default form widget
-for this field is a :class:`~django.forms.TextInput`.
 
 ``GenericIPAddressField``
 -------------------------
@@ -974,12 +1020,10 @@ databases supported by Django.
 A large text field. The default form widget for this field is a
 :class:`~django.forms.Textarea`.
 
-.. versionchanged:: 1.7
-
-    If you specify a ``max_length`` attribute, it will be reflected in the
-    :class:`~django.forms.Textarea` widget of the auto-generated form field.
-    However it is not enforced at the model or database level. Use a
-    :class:`CharField` for that.
+If you specify a ``max_length`` attribute, it will be reflected in the
+:class:`~django.forms.Textarea` widget of the auto-generated form field.
+However it is not enforced at the model or database level. Use a
+:class:`CharField` for that.
 
 .. admonition:: MySQL users
 
@@ -1094,12 +1138,6 @@ avoid the overhead of an index if you are creating a foreign key for
 consistency rather than joins, or if you will be creating an alternative index
 like a partial or multiple column index.
 
-.. warning::
-
-    It is not recommended to have a ``ForeignKey`` from an app without migrations
-    to an app with migrations. See the :ref:`dependencies documentation
-    <unmigrated-dependencies>` for more details.
-
 Database Representation
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1148,11 +1186,6 @@ define the details of how the relation works.
     available in the admin when the field is not listed in
     :attr:`~django.contrib.admin.ModelAdmin.raw_id_fields` in the
     ``ModelAdmin`` for the model.
-
-    .. versionchanged:: 1.7
-
-        Previous versions of Django do not allow passing a callable as a value
-        for ``limit_choices_to``.
 
     .. note::
 
@@ -1254,25 +1287,24 @@ The possible values for :attr:`~ForeignKey.on_delete` are found in
     necessary to avoid executing queries at the time your models.py is
     imported::
 
+        from django.conf import settings
+        from django.contrib.auth import get_user_model
         from django.db import models
-        from django.contrib.auth.models import User
 
         def get_sentinel_user():
-            return User.objects.get_or_create(username='deleted')[0]
+            return get_user_model().objects.get_or_create(username='deleted')[0]
 
         class MyModel(models.Model):
-            user = models.ForeignKey(User, on_delete=models.SET(get_sentinel_user))
+            user = models.ForeignKey(settings.AUTH_USER_MODEL,
+                                     on_delete=models.SET(get_sentinel_user))
 
 * .. attribute:: DO_NOTHING
 
     Take no action. If your database backend enforces referential
     integrity, this will cause an :exc:`~django.db.IntegrityError` unless
-    you manually add an SQL ``ON DELETE`` constraint to the database field
-    (perhaps using :ref:`initial sql<initial-sql>`).
+    you manually add an SQL ``ON DELETE`` constraint to the database field.
 
 .. attribute:: ForeignKey.swappable
-
-    .. versionadded:: 1.7
 
     Controls the migration framework's reaction if this :class:`ForeignKey`
     is pointing at a swappable model. If it is ``True`` - the default -
@@ -1293,6 +1325,30 @@ The possible values for :attr:`~ForeignKey.on_delete` are found in
 
     If in doubt, leave it to its default of ``True``.
 
+.. attribute:: ForeignKey.allow_unsaved_instance_assignment
+
+    .. versionadded:: 1.8
+
+        This flag was added for backwards compatibility as older versions of
+        Django always allowed assigning unsaved model instances.
+
+    Django prevents unsaved model instances from being assigned to a
+    ``ForeignKey`` field to prevent accidental data loss (unsaved foreign keys
+    are silently ignored when saving a model instance).
+
+    If you require allowing the assignment of unsaved instances and aren't
+    concerned about the data loss possibility (e.g. you never save the objects
+    to the database), you can disable this check by creating a subclass of the
+    field class and setting its ``allow_unsaved_instance_assignment`` attribute
+    to ``True``. For example::
+
+        class UnsavedForeignKey(models.ForeignKey):
+            # A ForeignKey which can point to an unsaved object
+            allow_unsaved_instance_assignment = True
+
+        class Book(models.Model):
+            author = UnsavedForeignKey(Author)
+
 .. _ref-manytomany:
 
 ``ManyToManyField``
@@ -1307,12 +1363,6 @@ which the model is related, which works exactly the same as it does for
 
 Related objects can be added, removed, or created with the field's
 :class:`~django.db.models.fields.related.RelatedManager`.
-
-.. warning::
-
-    It is not recommended to have a ``ManyToManyField`` from an app without migrations
-    to an app with migrations. See the :ref:`dependencies documentation
-    <unmigrated-dependencies>` for more details.
 
 Database Representation
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -1385,7 +1435,10 @@ that control how the relationship functions.
 
     If you don't specify an explicit ``through`` model, there is still an
     implicit ``through`` model class you can use to directly access the table
-    created to hold the association. It has three fields:
+    created to hold the association. It has three fields to link the models.
+
+    If the source and target models differ, the following fields are
+    generated:
 
     * ``id``: the primary key of the relation.
     * ``<containing_model>_id``: the ``id`` of the model that declares the
@@ -1393,12 +1446,19 @@ that control how the relationship functions.
     * ``<other_model>_id``: the ``id`` of the model that the
       ``ManyToManyField`` points to.
 
+    If the ``ManyToManyField`` points from and to the same model, the following
+    fields are generated:
+
+    * ``id``: the primary key of the relation.
+    * ``from_<model>_id``: the ``id`` of the instance which points at the
+      model (i.e. the source instance).
+    * ``to_<model>_id``: the ``id`` of the instance to which the relationship
+      points (i.e. the target model instance).
+
     This class can be used to query associated records for a given model
     instance like a normal model.
 
 .. attribute:: ManyToManyField.through_fields
-
-    .. versionadded:: 1.7
 
     Only used when a custom intermediary model is specified. Django will
     normally determine which fields of the intermediary model to use in order
@@ -1468,8 +1528,6 @@ that control how the relationship functions.
 
 .. attribute:: ManyToManyField.swappable
 
-    .. versionadded:: 1.7
-
     Controls the migration framework's reaction if this :class:`ManyToManyField`
     is pointing at a swappable model. If it is ``True`` - the default -
     then if the :class:`ManyToManyField` is pointing at a model which matches
@@ -1482,6 +1540,12 @@ that control how the relationship functions.
     if it is a profile model designed specifically for your custom user model.
 
     If in doubt, leave it to its default of ``True``.
+
+.. attribute:: ManyToManyField.allow_unsaved_instance_assignment
+
+    .. versionadded:: 1.8
+
+    Works analogously to :attr:`ForeignKey.allow_unsaved_instance_assignment`.
 
 :class:`ManyToManyField` does not support :attr:`~Field.validators`.
 
@@ -1515,12 +1579,12 @@ as default value.
 
 With the following example::
 
+    from django.conf import settings
     from django.db import models
-    from django.contrib.auth.models import User
 
     class MySpecialUser(models.Model):
-        user = models.OneToOneField(User)
-        supervisor = models.OneToOneField(User, related_name='supervisor_of')
+        user = models.OneToOneField(settings.AUTH_USER_MODEL)
+        supervisor = models.OneToOneField(settings.AUTH_USER_MODEL, related_name='supervisor_of')
 
 your resulting ``User`` model will have the following attributes::
 
@@ -1584,7 +1648,7 @@ Field API reference
 
     All of Django's built-in fields, such as :class:`CharField`, are particular
     implementations of ``Field``. If you need a custom field, you can either
-    subclass any of the built-in fields or write a ``Field``` from scratch. In
+    subclass any of the built-in fields or write a ``Field`` from scratch. In
     either case, see :doc:`/howto/custom-model-fields`.
 
     .. attribute:: description
@@ -1642,7 +1706,7 @@ Field API reference
 
     When loading data, :meth:`from_db_value` is used:
 
-    .. method:: from_db_value(value, connection)
+    .. method:: from_db_value(value, expression, connection, context)
 
         .. versionadded:: 1.8
 
@@ -1697,8 +1761,6 @@ Field API reference
         ``"year"``, ``"month"``, ``"day"``, ``"isnull"``, ``"search"``,
         ``"regex"``, and ``"iregex"``.
 
-        .. versionadded:: 1.7
-
         If you are using :doc:`Custom lookups </ref/models/lookups>` the
         ``lookup_type`` can be any ``lookup_name`` registered in the field.
 
@@ -1750,8 +1812,6 @@ Field API reference
 
     .. method:: deconstruct()
 
-        .. versionadded:: 1.7
-
         Returns a 4-tuple with enough information to recreate the field:
 
         1. The name of the field on the model.
@@ -1762,3 +1822,95 @@ Field API reference
 
         This method must be added to fields prior to 1.7 to migrate its data
         using :doc:`/topics/migrations`.
+
+.. _model-field-attributes:
+
+=========================
+Field attribute reference
+=========================
+
+.. versionadded:: 1.8
+
+Every ``Field`` instance contains several attributes that allow
+introspecting its behavior. Use these attributes instead of ``isinstance``
+checks when you need to write code that depends on a field's functionality.
+These attributes can be used together with the :ref:`Model._meta API
+<model-meta-field-api>` to narrow down a search for specific field types.
+Custom model fields should implement these flags.
+
+Attributes for fields
+=====================
+
+.. attribute:: Field.auto_created
+
+     Boolean flag that indicates if the field was automatically created, such
+     as the ``OneToOneField`` used by model inheritance.
+
+.. attribute:: Field.concrete
+
+    Boolean flag that indicates if the field has a database column associated
+    with it.
+
+.. attribute:: Field.hidden
+
+    Boolean flag that indicates if a field is used to back another non-hidden
+    field's functionality (e.g. the ``content_type`` and ``object_id`` fields
+    that make up a ``GenericForeignKey``). The ``hidden`` flag is used to
+    distinguish what constitutes the public subset of fields on the model from
+    all the fields on the model.
+
+    .. note::
+
+        :meth:`Options.get_fields()
+        <django.db.models.options.Options.get_fields()>`
+        excludes hidden fields by default. Pass in ``include_hidden=True`` to
+        return hidden fields in the results.
+
+.. attribute:: Field.is_relation
+
+    Boolean flag that indicates if a field contains references to one or
+    more other models for its functionality (e.g. ``ForeignKey``,
+    ``ManyToManyField``, ``OneToOneField``, etc.).
+
+.. attribute:: Field.model
+
+    Returns the model on which the field is defined. If a field is defined on
+    a superclass of a model, ``model`` will refer to the superclass, not the
+    class of the instance.
+
+Attributes for fields with relations
+====================================
+
+These attributes are used to query for the cardinality and other details of a
+relation. These attribute are present on all fields; however, they will only
+have boolean values (rather than ``None``) if the field is a relation type
+(:attr:`Field.is_relation=True <Field.is_relation>`).
+
+.. attribute:: Field.many_to_many
+
+    Boolean flag that is ``True`` if the field has a many-to-many relation;
+    ``False`` otherwise. The only field included with Django where this is
+    ``True`` is ``ManyToManyField``.
+
+.. attribute:: Field.many_to_one
+
+    Boolean flag that is ``True`` if the field has a many-to-one relation, such
+    as a ``ForeignKey``; ``False`` otherwise.
+
+.. attribute:: Field.one_to_many
+
+    Boolean flag that is ``True`` if the field has a one-to-many relation, such
+    as a ``GenericRelation`` or the reverse of a ``ForeignKey``; ``False``
+    otherwise.
+
+.. attribute:: Field.one_to_one
+
+    Boolean flag that is ``True`` if the field has a one-to-one relation, such
+    as a ``OneToOneField``; ``False`` otherwise.
+
+.. attribute:: Field.related_model
+
+    Points to the model the field relates to. For example, ``Author`` in
+    ``ForeignKey(Author)``. If a field has a generic relation (such as a
+    ``GenericForeignKey`` or a ``GenericRelation``) then ``related_model``
+    will be ``None``.

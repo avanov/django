@@ -77,7 +77,8 @@ Supported versions
 ==================
 
 At any moment in time, Django's developer team will support a set of releases to
-varying levels:
+varying levels. See `the download page`_ for the current state of support for
+each version.
 
 * The current development master will get new features and bug fixes
   requiring major refactoring.
@@ -132,9 +133,10 @@ to be "Long-term support" (LTS) releases. LTS releases will get security and
 data loss fixes applied for a guaranteed period of time, typically 3+ years,
 regardless of the pace of releases afterwards.
 
-The follow releases have been designated for long-term support:
+See `the download page`_ for the releases that have been designated for
+long-term support.
 
-* Django 1.4, supported until at least March 2015.
+.. _the download page: https://www.djangoproject.com/download/
 
 .. _release-process:
 
@@ -147,7 +149,7 @@ etc.) releases every nine months, or more, depending on features.
 After each release, and after a suitable cooling-off period of a few weeks,
 core developers will examine the landscape and announce a timeline for the
 next release. Most releases will be scheduled in the 6-9 month range, but if
-we have bigger features to development we might schedule a longer period to
+we have bigger features to develop we might schedule a longer period to
 allow for more ambitious work.
 
 Release cycle

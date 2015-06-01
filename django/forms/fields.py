@@ -16,32 +16,34 @@ from io import BytesIO
 
 from django.core import validators
 from django.core.exceptions import ValidationError
+# Provide this import for backwards compatibility.
+from django.core.validators import EMPTY_VALUES  # NOQA
 from django.forms.utils import from_current_timezone, to_current_timezone
 from django.forms.widgets import (
-    TextInput, NumberInput, EmailInput, URLInput, HiddenInput,
-    MultipleHiddenInput, ClearableFileInput, CheckboxInput, Select,
-    NullBooleanSelect, SelectMultiple, DateInput, DateTimeInput, TimeInput,
-    SplitDateTimeWidget, SplitHiddenDateTimeWidget, FILE_INPUT_CONTRADICTION
+    FILE_INPUT_CONTRADICTION, CheckboxInput, ClearableFileInput, DateInput,
+    DateTimeInput, EmailInput, HiddenInput, MultipleHiddenInput,
+    NullBooleanSelect, NumberInput, Select, SelectMultiple,
+    SplitDateTimeWidget, SplitHiddenDateTimeWidget, TextInput, TimeInput,
+    URLInput,
 )
-from django.utils import formats
-from django.utils.encoding import smart_text, force_str, force_text
+from django.utils import formats, six
+from django.utils.dateparse import parse_duration
+from django.utils.deprecation import (
+    RemovedInDjango20Warning, RenameMethodsBase,
+)
+from django.utils.duration import duration_string
+from django.utils.encoding import force_str, force_text, smart_text
 from django.utils.ipv6 import clean_ipv6_address
-from django.utils.deprecation import RemovedInDjango19Warning, RemovedInDjango20Warning, RenameMethodsBase
-from django.utils import six
 from django.utils.six.moves.urllib.parse import urlsplit, urlunsplit
 from django.utils.translation import ugettext_lazy as _, ungettext_lazy
 
-# Provide this import for backwards compatibility.
-from django.core.validators import EMPTY_VALUES  # NOQA
-
-
 __all__ = (
     'Field', 'CharField', 'IntegerField',
-    'DateField', 'TimeField', 'DateTimeField',
+    'DateField', 'TimeField', 'DateTimeField', 'DurationField',
     'RegexField', 'EmailField', 'FileField', 'ImageField', 'URLField',
     'BooleanField', 'NullBooleanField', 'ChoiceField', 'MultipleChoiceField',
     'ComboField', 'MultiValueField', 'FloatField', 'DecimalField',
-    'SplitDateTimeField', 'IPAddressField', 'GenericIPAddressField', 'FilePathField',
+    'SplitDateTimeField', 'GenericIPAddressField', 'FilePathField',
     'SlugField', 'TypedChoiceField', 'TypedMultipleChoiceField', 'UUIDField',
 )
 
@@ -181,17 +183,6 @@ class Field(six.with_metaclass(RenameFieldMethods, object)):
         """
         return {}
 
-    def get_limit_choices_to(self):
-        """
-        Returns ``limit_choices_to`` for this form field.
-
-        If it is a callable, it will be invoked and the result will be
-        returned.
-        """
-        if callable(self.limit_choices_to):
-            return self.limit_choices_to()
-        return self.limit_choices_to
-
     def has_changed(self, initial, data):
         """
         Return True if data differs from initial.
@@ -204,6 +195,7 @@ class Field(six.with_metaclass(RenameFieldMethods, object)):
             data = self.to_python(data)
             if hasattr(self, '_coerce'):
                 data = self._coerce(data)
+                initial_value = self._coerce(initial_value)
         except ValidationError:
             return True
         data_value = data if data is not None else ''
@@ -245,6 +237,7 @@ class IntegerField(Field):
     default_error_messages = {
         'invalid': _('Enter a whole number.'),
     }
+    re_decimal = re.compile(r'\.0*\s*$')
 
     def __init__(self, max_value=None, min_value=None, *args, **kwargs):
         self.max_value, self.min_value = max_value, min_value
@@ -268,8 +261,9 @@ class IntegerField(Field):
             return None
         if self.localize:
             value = formats.sanitize_separators(value)
+        # Strip trailing decimal and zeros.
         try:
-            value = int(str(value))
+            value = int(self.re_decimal.sub('', str(value)))
         except (ValueError, TypeError):
             raise ValidationError(self.error_messages['invalid'], code='invalid')
         return value
@@ -510,23 +504,32 @@ class DateTimeField(BaseTemporalField):
         if isinstance(value, datetime.date):
             result = datetime.datetime(value.year, value.month, value.day)
             return from_current_timezone(result)
-        if isinstance(value, list):
-            # Input comes from a SplitDateTimeWidget, for example. So, it's two
-            # components: date and time.
-            warnings.warn(
-                'Using SplitDateTimeWidget with DateTimeField is deprecated. '
-                'Use SplitDateTimeField instead.',
-                RemovedInDjango19Warning, stacklevel=2)
-            if len(value) != 2:
-                raise ValidationError(self.error_messages['invalid'], code='invalid')
-            if value[0] in self.empty_values and value[1] in self.empty_values:
-                return None
-            value = '%s %s' % tuple(value)
         result = super(DateTimeField, self).to_python(value)
         return from_current_timezone(result)
 
     def strptime(self, value, format):
         return datetime.datetime.strptime(force_str(value), format)
+
+
+class DurationField(Field):
+    default_error_messages = {
+        'invalid': _('Enter a valid duration.'),
+    }
+
+    def prepare_value(self, value):
+        if isinstance(value, datetime.timedelta):
+            return duration_string(value)
+        return value
+
+    def to_python(self, value):
+        if value in self.empty_values:
+            return None
+        if isinstance(value, datetime.timedelta):
+            return value
+        value = parse_duration(value)
+        if value is None:
+            raise ValidationError(self.error_messages['invalid'], code='invalid')
+        return value
 
 
 class RegexField(CharField):
@@ -798,6 +801,15 @@ class NullBooleanField(BooleanField):
         return initial != data
 
 
+class CallableChoiceIterator(object):
+    def __init__(self, choices_func):
+        self.choices_func = choices_func
+
+    def __iter__(self):
+        for e in self.choices_func():
+            yield e
+
+
 class ChoiceField(Field):
     widget = Select
     default_error_messages = {
@@ -822,7 +834,12 @@ class ChoiceField(Field):
         # Setting choices also sets the choices on the widget.
         # choices can be any iterable, but we call list() on it because
         # it will be consumed more than once.
-        self._choices = self.widget.choices = list(value)
+        if callable(value):
+            value = CallableChoiceIterator(value)
+        else:
+            value = list(value)
+
+        self._choices = self.widget.choices = value
 
     choices = property(_get_choices, _set_choices)
 
@@ -1025,7 +1042,7 @@ class MultiValueField(Field):
 
     def __deepcopy__(self, memo):
         result = super(MultiValueField, self).__deepcopy__(memo)
-        result.fields = tuple([x.__deepcopy__(memo) for x in self.fields])
+        result.fields = tuple(x.__deepcopy__(memo) for x in self.fields)
         return result
 
     def validate(self, value):
@@ -1101,7 +1118,11 @@ class MultiValueField(Field):
             if not isinstance(initial, list):
                 initial = self.widget.decompress(initial)
         for field, initial, data in zip(self.fields, initial, data):
-            if field.has_changed(field.to_python(initial), data):
+            try:
+                initial = field.to_python(initial)
+            except ValidationError:
+                return True
+            if field.has_changed(initial, data):
                 return True
         return False
 
@@ -1188,20 +1209,6 @@ class SplitDateTimeField(MultiValueField):
             result = datetime.datetime.combine(*data_list)
             return from_current_timezone(result)
         return None
-
-
-class IPAddressField(CharField):
-    default_validators = [validators.validate_ipv4_address]
-
-    def __init__(self, *args, **kwargs):
-        warnings.warn("IPAddressField has been deprecated. Use GenericIPAddressField instead.",
-                      RemovedInDjango19Warning)
-        super(IPAddressField, self).__init__(*args, **kwargs)
-
-    def to_python(self, value):
-        if value in self.empty_values:
-            return ''
-        return value.strip()
 
 
 class GenericIPAddressField(CharField):

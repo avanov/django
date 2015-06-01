@@ -17,11 +17,11 @@ from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage
 from django.db import models
 from django.utils import six
-from django.utils.encoding import python_2_unicode_compatible
 from django.utils._os import upath
+from django.utils.encoding import python_2_unicode_compatible
+from django.utils.six.moves import range
 
-
-temp_storage_dir = tempfile.mkdtemp(dir=os.environ['DJANGO_TEST_TEMP_DIR'])
+temp_storage_dir = tempfile.mkdtemp()
 temp_storage = FileSystemStorage(temp_storage_dir)
 
 ARTICLE_STATUS = (
@@ -104,6 +104,23 @@ class Publication(models.Model):
 
     def __str__(self):
         return self.title
+
+
+def default_mode():
+    return 'di'
+
+
+def default_category():
+    return 3
+
+
+class PublicationDefaults(models.Model):
+    MODE_CHOICES = (('di', 'direct'), ('de', 'delayed'))
+    CATEGORY_CHOICES = ((1, 'Games'), (2, 'Comics'), (3, 'Novel'))
+    title = models.CharField(max_length=30)
+    date_published = models.DateField(default=datetime.date.today)
+    mode = models.CharField(max_length=2, choices=MODE_CHOICES, default=default_mode)
+    category = models.IntegerField(choices=CATEGORY_CHOICES, default=default_category)
 
 
 class Author(models.Model):
@@ -357,7 +374,7 @@ class Colour(models.Model):
     name = models.CharField(max_length=50)
 
     def __iter__(self):
-        for number in xrange(5):
+        for number in range(5):
             yield number
 
     def __str__(self):
@@ -381,6 +398,8 @@ class CustomErrorMessage(models.Model):
     def clean(self):
         if self.name1 == 'FORBIDDEN_VALUE':
             raise ValidationError({'name1': [ValidationError('Model.clean() error messages.')]})
+        elif self.name1 == 'FORBIDDEN_VALUE2':
+            raise ValidationError({'name1': 'Model.clean() error messages (simpler syntax).'})
         elif self.name1 == 'GLOBAL_ERROR':
             raise ValidationError("Global error message.")
 

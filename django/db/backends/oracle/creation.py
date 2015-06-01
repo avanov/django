@@ -2,61 +2,15 @@ import sys
 import time
 
 from django.conf import settings
-from django.db.backends.creation import BaseDatabaseCreation
+from django.db.backends.base.creation import BaseDatabaseCreation
 from django.db.utils import DatabaseError
 from django.utils.six.moves import input
-
 
 TEST_DATABASE_PREFIX = 'test_'
 PASSWORD = 'Im_a_lumberjack'
 
 
 class DatabaseCreation(BaseDatabaseCreation):
-    # This dictionary maps Field objects to their associated Oracle column
-    # types, as strings. Column-type strings can contain format strings; they'll
-    # be interpolated against the values of Field.__dict__ before being output.
-    # If a column type is set to None, it won't be included in the output.
-    #
-    # Any format strings starting with "qn_" are quoted before being used in the
-    # output (the "qn_" prefix is stripped before the lookup is performed.
-
-    data_types = {
-        'AutoField': 'NUMBER(11)',
-        'BinaryField': 'BLOB',
-        'BooleanField': 'NUMBER(1)',
-        'CharField': 'NVARCHAR2(%(max_length)s)',
-        'CommaSeparatedIntegerField': 'VARCHAR2(%(max_length)s)',
-        'DateField': 'DATE',
-        'DateTimeField': 'TIMESTAMP',
-        'DecimalField': 'NUMBER(%(max_digits)s, %(decimal_places)s)',
-        'FileField': 'NVARCHAR2(%(max_length)s)',
-        'FilePathField': 'NVARCHAR2(%(max_length)s)',
-        'FloatField': 'DOUBLE PRECISION',
-        'IntegerField': 'NUMBER(11)',
-        'BigIntegerField': 'NUMBER(19)',
-        'IPAddressField': 'VARCHAR2(15)',
-        'GenericIPAddressField': 'VARCHAR2(39)',
-        'NullBooleanField': 'NUMBER(1)',
-        'OneToOneField': 'NUMBER(11)',
-        'PositiveIntegerField': 'NUMBER(11)',
-        'PositiveSmallIntegerField': 'NUMBER(11)',
-        'SlugField': 'NVARCHAR2(%(max_length)s)',
-        'SmallIntegerField': 'NUMBER(11)',
-        'TextField': 'NCLOB',
-        'TimeField': 'TIMESTAMP',
-        'URLField': 'VARCHAR2(%(max_length)s)',
-        'UUIDField': 'VARCHAR2(32)',
-    }
-
-    data_type_check_constraints = {
-        'BooleanField': '%(qn_column)s IN (0,1)',
-        'NullBooleanField': '(%(qn_column)s IN (0,1)) OR (%(qn_column)s IS NULL)',
-        'PositiveIntegerField': '%(qn_column)s >= 0',
-        'PositiveSmallIntegerField': '%(qn_column)s >= 0',
-    }
-
-    def __init__(self, connection):
-        super(DatabaseCreation, self).__init__(connection)
 
     def _create_test_db(self, verbosity=1, autoclobber=False, keepdb=False):
         parameters = self._get_test_db_params()
@@ -75,10 +29,22 @@ class DatabaseCreation(BaseDatabaseCreation):
                         "It appears the test database, %s, already exists. "
                         "Type 'yes' to delete it, or 'no' to cancel: " % parameters['user'])
                 if autoclobber or confirm == 'yes':
+                    if verbosity >= 1:
+                        print("Destroying old test database '%s'..." % self.connection.alias)
                     try:
-                        if verbosity >= 1:
-                            print("Destroying old test database '%s'..." % self.connection.alias)
                         self._execute_test_db_destruction(cursor, parameters, verbosity)
+                    except DatabaseError as e:
+                        if 'ORA-29857' in str(e):
+                            self._handle_objects_preventing_db_destruction(cursor, parameters,
+                                                                           verbosity, autoclobber)
+                        else:
+                            # Ran into a database error that isn't about leftover objects in the tablespace
+                            sys.stderr.write("Got an error destroying the old test database: %s\n" % e)
+                            sys.exit(2)
+                    except Exception as e:
+                        sys.stderr.write("Got an error destroying the old test database: %s\n" % e)
+                        sys.exit(2)
+                    try:
                         self._execute_test_db_creation(cursor, parameters, verbosity)
                     except Exception as e:
                         sys.stderr.write("Got an error recreating the test database: %s\n" % e)
@@ -127,6 +93,41 @@ class DatabaseCreation(BaseDatabaseCreation):
         real_settings['PASSWORD'] = self.connection.settings_dict['PASSWORD'] = parameters['password']
 
         return self.connection.settings_dict['NAME']
+
+    def _handle_objects_preventing_db_destruction(self, cursor, parameters, verbosity, autoclobber):
+        # There are objects in the test tablespace which prevent dropping it
+        # The easy fix is to drop the test user -- but are we allowed to do so?
+        print("There are objects in the old test database which prevent its destruction.")
+        print("If they belong to the test user, deleting the user will allow the test "
+              "database to be recreated.")
+        print("Otherwise, you will need to find and remove each of these objects, "
+              "or use a different tablespace.\n")
+        if self._test_user_create():
+            if not autoclobber:
+                confirm = input("Type 'yes' to delete user %s: " % parameters['user'])
+            if autoclobber or confirm == 'yes':
+                try:
+                    if verbosity >= 1:
+                        print("Destroying old test user...")
+                    self._destroy_test_user(cursor, parameters, verbosity)
+                except Exception as e:
+                    sys.stderr.write("Got an error destroying the test user: %s\n" % e)
+                    sys.exit(2)
+                try:
+                    if verbosity >= 1:
+                        print("Destroying old test database '%s'..." % self.connection.alias)
+                    self._execute_test_db_destruction(cursor, parameters, verbosity)
+                except Exception as e:
+                    sys.stderr.write("Got an error destroying the test database: %s\n" % e)
+                    sys.exit(2)
+            else:
+                print("Tests cancelled -- test database cannot be recreated.")
+                sys.exit(1)
+        else:
+            print("Django is configured to use pre-existing test user '%s',"
+                  " and will not attempt to delete it.\n" % parameters['user'])
+            print("Tests cancelled -- test database cannot be recreated.")
+            sys.exit(1)
 
     def _destroy_test_db(self, test_database_name, verbosity=1):
         """

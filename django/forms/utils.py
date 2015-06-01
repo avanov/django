@@ -3,21 +3,17 @@ from __future__ import unicode_literals
 import json
 import sys
 
+from django.conf import settings
+from django.core.exceptions import ValidationError  # backwards compatibility
+from django.utils import six, timezone
+from django.utils.encoding import force_text, python_2_unicode_compatible
+from django.utils.html import escape, format_html, format_html_join, html_safe
+from django.utils.translation import ugettext_lazy as _
+
 try:
     from collections import UserList
 except ImportError:  # Python 2
     from UserList import UserList
-
-from django.conf import settings
-from django.utils.encoding import force_text, python_2_unicode_compatible
-from django.utils.html import format_html, format_html_join, escape
-from django.utils import timezone
-from django.utils.translation import ugettext_lazy as _
-from django.utils import six
-
-# Import ValidationError so that it can be imported from this
-# module to maintain backwards compatibility.
-from django.core.exceptions import ValidationError
 
 
 def flatatt(attrs):
@@ -29,20 +25,22 @@ def flatatt(attrs):
 
     The result is passed through 'mark_safe'.
     """
+    key_value_attrs = []
     boolean_attrs = []
-    for attr, value in list(attrs.items()):
-        if value is True:
-            boolean_attrs.append((attr,))
-            del attrs[attr]
-        elif value is False:
-            del attrs[attr]
+    for attr, value in attrs.items():
+        if isinstance(value, bool):
+            if value:
+                boolean_attrs.append((attr,))
+        else:
+            key_value_attrs.append((attr, value))
 
     return (
-        format_html_join('', ' {0}="{1}"', sorted(attrs.items())) +
-        format_html_join('', ' {0}', sorted(boolean_attrs))
+        format_html_join('', ' {}="{}"', sorted(key_value_attrs)) +
+        format_html_join('', ' {}', sorted(boolean_attrs))
     )
 
 
+@html_safe
 @python_2_unicode_compatible
 class ErrorDict(dict):
     """
@@ -60,8 +58,8 @@ class ErrorDict(dict):
         if not self:
             return ''
         return format_html(
-            '<ul class="errorlist">{0}</ul>',
-            format_html_join('', '<li>{0}{1}</li>', ((k, force_text(v)) for k, v in self.items()))
+            '<ul class="errorlist">{}</ul>',
+            format_html_join('', '<li>{}{}</li>', ((k, force_text(v)) for k, v in self.items()))
         )
 
     def as_text(self):
@@ -75,6 +73,7 @@ class ErrorDict(dict):
         return self.as_ul()
 
 
+@html_safe
 @python_2_unicode_compatible
 class ErrorList(UserList, list):
     """
@@ -109,9 +108,9 @@ class ErrorList(UserList, list):
             return ''
 
         return format_html(
-            '<ul class="{0}">{1}</ul>',
+            '<ul class="{}">{}</ul>',
             self.error_class,
-            format_html_join('', '<li>{0}</li>', ((force_text(e),) for e in self))
+            format_html_join('', '<li>{}</li>', ((force_text(e),) for e in self))
         )
 
     def as_text(self):

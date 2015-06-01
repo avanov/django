@@ -1,7 +1,7 @@
 from django.conf import settings
-from django.contrib.sessions.backends.base import SessionBase, CreateError
+from django.contrib.sessions.backends.base import CreateError, SessionBase
 from django.core.cache import caches
-from django.utils.six.moves import xrange
+from django.utils.six.moves import range
 
 KEY_PREFIX = "django.contrib.sessions.cache"
 
@@ -20,7 +20,7 @@ class SessionStore(SessionBase):
 
     def load(self):
         try:
-            session_data = self._cache.get(self.cache_key, None)
+            session_data = self._cache.get(self.cache_key)
         except Exception:
             # Some backends (e.g. memcache) raise an exception on invalid
             # cache keys. If this happens, reset the session. See #17810.
@@ -36,7 +36,7 @@ class SessionStore(SessionBase):
         # because the cache is missing. So we try for a (large) number of times
         # and then raise an exception. That's the risk you shoulder if using
         # cache backing.
-        for i in xrange(10000):
+        for i in range(10000):
             self._session_key = self._get_new_session_key()
             try:
                 self.save(must_create=True)

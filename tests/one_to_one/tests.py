@@ -1,10 +1,12 @@
 from __future__ import unicode_literals
 
-from django.db import transaction, IntegrityError, connection
+from django.db import IntegrityError, connection, models, transaction
 from django.test import TestCase
 
-from .models import (Bar, Favorites, HiddenPointer, ManualPrimaryKey, MultiModel,
-    Place, RelatedModel, Restaurant, School, Director, Target, UndergroundBar, Waiter)
+from .models import (
+    Bar, Director, Favorites, HiddenPointer, ManualPrimaryKey, MultiModel,
+    Place, RelatedModel, Restaurant, School, Target, UndergroundBar, Waiter,
+)
 
 
 class OneToOneTests(TestCase):
@@ -96,12 +98,15 @@ class OneToOneTests(TestCase):
         assert_filter_waiters(restaurant__place__exact=self.p1.pk)
         assert_filter_waiters(restaurant__place__exact=self.p1)
         assert_filter_waiters(restaurant__place__pk=self.p1.pk)
-        assert_filter_waiters(restaurant__exact=self.p1.pk)
-        assert_filter_waiters(restaurant__pk=self.p1.pk)
-        assert_filter_waiters(restaurant=self.p1.pk)
+        assert_filter_waiters(restaurant__exact=self.r1.pk)
+        assert_filter_waiters(restaurant__exact=self.r1)
+        assert_filter_waiters(restaurant__pk=self.r1.pk)
+        assert_filter_waiters(restaurant=self.r1.pk)
         assert_filter_waiters(restaurant=self.r1)
+        assert_filter_waiters(id__exact=w.pk)
+        assert_filter_waiters(pk=w.pk)
         # Delete the restaurant; the waiter should also be removed
-        r = Restaurant.objects.get(pk=self.p1.pk)
+        r = Restaurant.objects.get(pk=self.r1.pk)
         r.delete()
         self.assertEqual(Waiter.objects.count(), 0)
 
@@ -131,7 +136,7 @@ class OneToOneTests(TestCase):
         place = Place(name='User', address='London')
         with self.assertRaisesMessage(ValueError,
                             'Cannot assign "%r": "%s" instance isn\'t saved in the database.'
-                            % (place, Restaurant.place.field.rel.to._meta.object_name)):
+                            % (place, Restaurant.place.field.remote_field.model._meta.object_name)):
             Restaurant.objects.create(place=place, serves_hot_dogs=True, serves_pizza=False)
         bar = UndergroundBar()
         p = Place(name='User', address='London')
@@ -139,6 +144,31 @@ class OneToOneTests(TestCase):
                             'Cannot assign "%r": "%s" instance isn\'t saved in the database.'
                             % (bar, p._meta.object_name)):
             p.undergroundbar = bar
+
+    def test_unsaved_object_check_override(self):
+        """
+        #24495 - Assigning an unsaved object to a OneToOneField
+        should be allowed when the allow_unsaved_instance_assignment
+        attribute has been set to True.
+        """
+        class UnsavedOneToOneField(models.OneToOneField):
+            # A OneToOneField which can point to an unsaved object
+            allow_unsaved_instance_assignment = True
+
+        class Band(models.Model):
+            name = models.CharField(max_length=50)
+
+        class BandManager(models.Model):
+            band = UnsavedOneToOneField(Band)
+            first_name = models.CharField(max_length=50)
+            last_name = models.CharField(max_length=50)
+
+        band = Band(name='The Beatles')
+        manager = BandManager(first_name='Brian', last_name='Epstein')
+        # This should not raise an exception as the OneToOneField between
+        # manager and band has allow_unsaved_instance_assignment=True.
+        manager.band = band
+        self.assertEqual(manager.band, band)
 
     def test_reverse_relationship_cache_cascade(self):
         """
@@ -190,23 +220,23 @@ class OneToOneTests(TestCase):
         r = p.restaurant
 
         # Accessing the related object again returns the exactly same object
-        self.assertTrue(p.restaurant is r)
+        self.assertIs(p.restaurant, r)
 
         # But if we kill the cache, we get a new object
         del p._restaurant_cache
-        self.assertFalse(p.restaurant is r)
+        self.assertIsNot(p.restaurant, r)
 
         # Reassigning the Restaurant object results in an immediate cache update
         # We can't use a new Restaurant because that'll violate one-to-one, but
         # with a new *instance* the is test below will fail if #6886 regresses.
         r2 = Restaurant.objects.get(pk=r.pk)
         p.restaurant = r2
-        self.assertTrue(p.restaurant is r2)
+        self.assertIs(p.restaurant, r2)
 
         # Assigning None succeeds if field is null=True.
         ug_bar = UndergroundBar.objects.create(place=p, serves_cocktails=False)
         ug_bar.place = None
-        self.assertTrue(ug_bar.place is None)
+        self.assertIsNone(ug_bar.place)
 
         # Assigning None fails: Place.restaurant is null=False
         self.assertRaises(ValueError, setattr, p, 'restaurant', None)
@@ -217,13 +247,13 @@ class OneToOneTests(TestCase):
         # Creation using keyword argument should cache the related object.
         p = Place.objects.get(name="Demon Dogs")
         r = Restaurant(place=p)
-        self.assertTrue(r.place is p)
+        self.assertIs(r.place, p)
 
         # Creation using attname keyword argument and an id will cause the related
         # object to be fetched.
         p = Place.objects.get(name="Demon Dogs")
         r = Restaurant(place_id=p.id)
-        self.assertFalse(r.place is p)
+        self.assertIsNot(r.place, p)
         self.assertEqual(r.place, p)
 
     def test_filter_one_to_one_relations(self):
@@ -380,7 +410,7 @@ class OneToOneTests(TestCase):
         be added to the related model.
         """
         self.assertFalse(
-            hasattr(Target, HiddenPointer._meta.get_field('target').related.get_accessor_name())
+            hasattr(Target, HiddenPointer._meta.get_field('target').remote_field.get_accessor_name())
         )
 
     def test_related_object(self):
@@ -438,3 +468,14 @@ class OneToOneTests(TestCase):
         # refs #21563
         self.assertFalse(hasattr(Director(), 'director'))
         self.assertFalse(hasattr(School(), 'school'))
+
+    def test_update_one_to_one_pk(self):
+        p1 = Place.objects.create()
+        p2 = Place.objects.create()
+        r1 = Restaurant.objects.create(place=p1)
+        r2 = Restaurant.objects.create(place=p2)
+        w = Waiter.objects.create(restaurant=r1)
+
+        Waiter.objects.update(restaurant=r2)
+        w.refresh_from_db()
+        self.assertEqual(w.restaurant, r2)
